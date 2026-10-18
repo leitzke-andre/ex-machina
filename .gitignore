@@ -1,0 +1,19 @@
+# NI's proprietary files (manual, firmware updaters, installer image, the unmodified stock firmware): local only, never committed.
+# Patched images, the carved stock image, decompressed RAM data and decompilations contain NI code too: keep them out of the repo (scratch directories are fine).
+/proprietary/
+*.bin
+*.dmg
+*.app/
+MM3*Updater*
+*.ghidra
+*.gpr
+*.rep/
+
+# local tooling and editor state
+.claude/settings.local.json
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+venv*/
+node_modules/

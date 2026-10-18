@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mk3-ui",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["tools/ui/serve.py", "8765", "--no-open"],
+      "port": 8765
+    }
+  ]
+}

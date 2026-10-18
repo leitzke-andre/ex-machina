@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ex-Machina setup</title>
+<style>
+  :root {
+    --bg: #f3f2ef; --panel: #ffffff; --panel-2: #f7f6f3; --text: #1d1d1b; --muted: #66645e; --border: #dad8d1;
+    --accent: #b85c08; --accent-text: #ffffff; --ok: #1d7f47; --warn: #9a6a0a; --danger: #c0392b; --focus: #2b6cd4; --chip: #ebe8e0; --changed: #d98a2b;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #141413; --panel: #1e1e1c; --panel-2: #252523; --text: #ecebe6; --muted: #a09e96; --border: #36352f;
+      --accent: #f09a3e; --accent-text: #1b1100; --ok: #4cc27e; --warn: #e0b14d; --danger: #f06a5a; --focus: #7fb0ff; --chip: #2b2a26; --changed: #f09a3e;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #141413; --panel: #1e1e1c; --panel-2: #252523; --text: #ecebe6; --muted: #a09e96; --border: #36352f;
+    --accent: #f09a3e; --accent-text: #1b1100; --ok: #4cc27e; --warn: #e0b14d; --danger: #f06a5a; --focus: #7fb0ff; --chip: #2b2a26; --changed: #f09a3e;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 var(--sans); }
+  body { padding-bottom: 64px; }
+  h1 { font-size: 18px; margin: 0; letter-spacing: .01em; }
+  h1 small { color: var(--muted); font-weight: 500; margin-left: 6px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 24px 0 10px; }
+  h2:first-child { margin-top: 0; }
+  p { margin: 0 0 10px; }
+  .muted { color: var(--muted); }
+  code, .mono { font-family: var(--mono); font-size: .92em; }
+  a { color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 16px; }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 12px 0; }
+  .bar .grow { flex: 1 1 auto; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--chip); font-size: 12.5px; white-space: nowrap; }
+  .chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .chip.ok::before { background: var(--ok); } .chip.warn::before { background: var(--warn); } .chip.bad::before { background: var(--danger); } .chip.edit::before { background: var(--changed); }
+  .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  button, select, input[type=number], input[type=text] { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 11px; }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--muted); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 600; }
+  button.danger { color: var(--danger); }
+  label.live { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--muted); }
+  input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
+  input[type=number] { width: 78px; font-family: var(--mono); text-align: right; }
+  input.bad { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, var(--panel)); }
+
+  nav.tabs { display: flex; gap: 2px; overflow-x: auto; }
+  nav.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 9px 14px; color: var(--muted); font-weight: 500; }
+  nav.tabs button[aria-selected=true] { color: var(--text); border-bottom-color: var(--accent); }
+
+  main { padding: 22px 0; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-bottom: 10px; }
+  .row:last-child { margin-bottom: 0; }
+  .field { display: flex; align-items: center; gap: 8px; }
+  .field > span:first-child { min-width: 150px; color: var(--muted); }
+
+  .blist { display: grid; grid-template-columns: minmax(130px, 1.1fr) minmax(170px, 1.4fr) 92px 1fr; gap: 6px 12px; align-items: center; }
+  .blist .head { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; padding-bottom: 2px; }
+  .blist .grp { grid-column: 1 / -1; margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .blist .grp:first-of-type { margin-top: 0; border-top: 0; padding-top: 0; }
+  .blist .name { display: flex; align-items: center; gap: 8px; }
+  .blist .name i { width: 8px; height: 8px; border-radius: 50%; background: transparent; flex: none; }
+  .blist .name.changed i { background: var(--changed); }
+  .blist .name.sub { padding-left: 18px; color: var(--muted); font-size: 13.5px; }
+  .blist.noshift .srow { display: none; }
+  .blist .srow select, .blist .srow input { background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
+  .blist input[type=number][aria-label$="semitones"] { width: 78px; }
+  .blist select { width: 100%; }
+  .blist .hint { color: var(--muted); font-size: 13px; font-family: var(--mono); }
+  @media (max-width: 720px) { .blist { grid-template-columns: 1fr 1fr; } .blist .hint { grid-column: 1 / -1; } }
+
+  .pads { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; max-width: 520px; }
+  .pad { position: relative; aspect-ratio: 1 / 1; border-radius: 12px; border: 2px solid var(--padc, var(--border)); background: color-mix(in srgb, var(--padc, var(--panel)) 14%, var(--panel)); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; padding: 6px; }
+  .pad .no { position: absolute; top: 6px; left: 9px; font-size: 12px; color: var(--muted); font-family: var(--mono); }
+  .pad input { width: 66px; }
+  .pad .nn { font-size: 12.5px; color: var(--muted); font-family: var(--mono); }
+  .pad.changed { box-shadow: 0 0 0 2px var(--changed); }
+  .swatches { display: flex; flex-wrap: wrap; gap: 5px; }
+  .swatches button { width: 26px; height: 26px; padding: 0; border-radius: 6px; background: var(--sw); border: 2px solid transparent; }
+  .swatches button[aria-pressed=true] { border-color: var(--text); }
+  .swatches button.white { border-color: var(--border); }
+
+  .kv { display: grid; grid-template-columns: 180px 1fr; gap: 6px 14px; margin: 0; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; font-family: var(--mono); }
+  .steps { counter-reset: s; padding: 0; list-style: none; margin: 0; }
+  .steps > li { counter-increment: s; padding: 12px 0 12px 40px; position: relative; border-top: 1px solid var(--border); }
+  .steps > li:first-child { border-top: 0; }
+  .steps > li::before { content: counter(s); position: absolute; left: 0; top: 12px; width: 26px; height: 26px; border-radius: 50%; background: var(--chip); display: grid; place-items: center; font-weight: 600; font-size: 13px; }
+  .steps > li.done::before { content: "✓"; background: var(--ok); color: #fff; }
+  .steps > li.off { opacity: .55; }
+  progress { width: 100%; height: 10px; accent-color: var(--accent); }
+  .note { border-left: 3px solid var(--warn); padding: 6px 12px; background: var(--panel-2); border-radius: 0 8px 8px 0; color: var(--muted); }
+  .note.bad { border-left-color: var(--danger); }
+  pre.log { margin: 0; max-height: 220px; overflow: auto; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; font: 12.5px/1.5 var(--mono); }
+
+  footer#status { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel); border-top: 1px solid var(--border); padding: 10px 16px; font-size: 14px; }
+  footer#status.error { color: var(--danger); } footer#status .wrap { display: flex; gap: 10px; }
+  label.presetsel { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13.5px; }
+  label.presetsel select { max-width: 230px; color: var(--text); font-weight: 600; }
+  .presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; margin-bottom: 16px; }
+  .pcard { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .pcard.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .pcard h3 { margin: 0; font-size: 16px; }
+  .pcard .phead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+  .pcard .desc { margin: 0; color: var(--muted); font-size: 14px; }
+  .pcard ul { margin: 0; padding: 0; list-style: none; font-size: 13.5px; }
+  .pcard .facts li { display: grid; grid-template-columns: 96px 1fr; gap: 8px; padding: 2px 0; }
+  .pcard .facts b { color: var(--muted); font-weight: 500; }
+  .pcard details { font-size: 13.5px; }
+  .pcard details summary { cursor: pointer; color: var(--muted); }
+  .pcard details ul { margin-top: 6px; padding-left: 4px; font-family: var(--mono); font-size: 12.5px; }
+  .pcard .btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+  .tag { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; background: var(--chip); color: var(--muted); }
+  .tag.on { background: var(--accent); color: var(--accent-text); } .tag.dev { background: color-mix(in srgb, var(--ok) 25%, var(--chip)); color: var(--text); }
+  dialog { border: 1px solid var(--border); border-radius: 14px; background: var(--panel); color: var(--text); padding: 20px; width: min(440px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgba(0, 0, 0, .5); }
+  dialog h3 { margin: 0 0 12px; }
+  dialog label { display: block; margin-bottom: 12px; font-size: 13.5px; color: var(--muted); }
+  dialog input[type=text], dialog textarea { display: block; width: 100%; margin-top: 4px; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; }
+  dialog menu { display: flex; justify-content: flex-end; gap: 8px; padding: 0; margin: 4px 0 0; }
+  .row .grow { flex: 1 1 auto; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="bar">
+      <h1>Ex-Machina <small>Maschine Mikro MK3 setup</small></h1>
+      <div class="chips"><span id="chip-conn" class="chip">Not connected</span><span id="chip-sync" class="chip">Editing offline</span></div>
+      <label class="presetsel" title="Switch the whole configuration to a preset (and send it to the device when connected)"><span>Preset</span><select id="preset-select" aria-label="Preset"></select><span id="preset-mod" class="chip edit" hidden>modified</span></label>
+      <span class="grow"></span>
+      <div class="actions">
+        <button id="btn-connect" class="primary">Connect</button>
+        <button id="btn-read" disabled>Read from device</button>
+        <button id="btn-send" disabled>Send to device</button>
+        <button id="btn-save" disabled>Save on device</button>
+        <label class="live" title="Every change is sent to the device a moment after you make it (not saved until you press Save)"><input type="checkbox" id="live"> Send as I edit</label>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist" id="tabs">
+      <button role="tab" data-tab="presets" aria-selected="true">Presets</button>
+      <button role="tab" data-tab="buttons" aria-selected="false">Buttons</button>
+      <button role="tab" data-tab="pads" aria-selected="false">Pads</button>
+      <button role="tab" data-tab="controls" aria-selected="false">Encoder &amp; strip</button>
+      <button role="tab" data-tab="leds" aria-selected="false">LEDs</button>
+      <button role="tab" data-tab="device" aria-selected="false">Device</button>
+      <button role="tab" data-tab="firmware" aria-selected="false">Firmware</button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <section id="tab-presets" role="tabpanel">
+    <div class="card">
+      <div class="row">
+        <span>Editor: <strong id="cur-name">Default</strong> <span id="cur-note" class="muted"></span></span>
+        <span class="grow"></span>
+        <button id="btn-psave" title="Keep the current configuration as a new preset of your own">Save as preset…</button>
+        <button id="btn-pupdate" title="Write the changes into the preset">Save changes to preset</button>
+        <button id="btn-prevert" title="Throw the changes away and load the preset again">Discard changes</button>
+      </div>
+      <p class="muted" id="store-note" style="margin:8px 0 0">A preset is a complete configuration. <em>Use</em> loads it into the editor and, with the device connected, sends it (it is not kept on the device until you press <em>Save on device</em>).</p>
+    </div>
+    <div class="presets" id="preset-cards"></div>
+    <div class="card">
+      <h2>Backup and sharing</h2>
+      <div class="row"><button id="btn-pexport">Export my presets</button><label>Import presets <input type="file" id="file-pimport" accept="application/json,.json" multiple></label></div>
+      <p class="muted" style="margin:6px 0 0">Your presets are kept in this browser (for this address). A file made here can be imported on another computer; <code>tools/midi_patch/mmk3_config.py preset apply NAME FILE</code> sends one from the command line.</p>
+    </div>
+  </section>
+
+  <section id="tab-buttons" role="tabpanel" hidden>
+    <div class="card">
+      <div class="row">
+        <strong>Transport buttons</strong>
+        <button data-transport="default">MIDI Start / Stop</button>
+        <button data-transport="transport_cc">Control Changes (57 / 58 / 59)</button>
+        <button data-transport="transport_mmc">MIDI Machine Control</button>
+        <span class="muted">Play, Rec and Stop only; everything else stays as it is.</span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="row">
+        <label class="field"><input type="checkbox" id="show-shift"><span style="min-width:0;color:var(--text)">Show what each button does while Shift is held</span></label>
+      </div>
+      <p class="muted">A button can have a second action for when a button set to <em>Shift (hold)</em> is held down. The device's own functions (pad modes, Fixed Vel, velocity curve, transpose, panic) change how the pads play and show a message on the screen for a moment; the preset <em>Maschine-like modes</em> sets them up the way NI's buttons are named.</p>
+      <div class="blist" id="blist"></div>
+    </div>
+  </section>
+
+  <section id="tab-pads" role="tabpanel" hidden>
+    <div class="card">
+      <div class="row">
+        <div class="field"><span>First pad note</span><input type="number" id="padbase" min="0" max="112" value="36" aria-label="Note of pad 1"><button id="padbase-apply">Set pads 1–16 in a row</button></div>
+        <button data-padbase="36">General MIDI drums (36)</button>
+        <button data-padbase="12">NI's own notes (12)</button>
+        <button data-padbase="48">From C2 (48)</button>
+        <button data-padbase="60">From C3 (60)</button>
+      </div>
+      <p class="muted">Note names use middle C = C3 (note 60), so note 36 is C1. The pads are drawn as they sit on the device: pad 1 is the bottom left.</p>
+    </div>
+    <div class="card"><div class="pads" id="pads"></div></div>
+    <div class="card">
+      <h2>Playing</h2>
+      <div class="row"><div class="field"><span>Velocity curve</span><select id="f-vel_curve"></select></div></div>
+      <div class="row"><div class="field"><span>Fixed Vel value</span><span id="f-fixvel"></span></div>
+        <div class="field"><span>Keyboard mode: first note</span><span id="f-keys_root"></span><span class="muted mono" id="keys-root-name"></span></div></div>
+      <div class="row"><div class="field"><span>Scale at start</span><select id="f-scale"></select></div>
+        <div class="field"><span>Chord type at start</span><select id="f-chord_type"></select></div></div>
+      <div class="row"><div class="field"><span>Arp pattern at start</span><select id="f-arp_type"></select></div>
+        <div class="field"><span>Arp rate</span><select id="f-arp_rate"></select></div>
+        <div class="field"><span>Octaves</span><select id="f-arp_oct"></select></div>
+        <div class="field"><span>Start tempo (BPM)</span><span id="f-tempo"></span></div></div>
+      <div class="row"><div class="field"><span>Pad pressure</span><select id="f-press_mode"></select></div>
+        <div class="field" id="press-cc-row"><span>Pressure CC</span><span id="f-press_cc"></span></div></div>
+      <p class="muted">The velocity curve is NI's own set. A button set to <em>Velocity curve: step</em> changes it on the device (and the device remembers the choice without saving; saving the mapping keeps it as well). Fixed Vel, Keyboard and Chords mode (with the scale and chord type it starts with; buttons can step through them) work with buttons set to those functions. The arp (a button set to <em>Arp / Note Repeat</em>) plays the notes of the held pads in time, at the tempo below (tap it with <em>Tap tempo</em>; an incoming MIDI clock takes over); with the repeat pattern it is NI's Note Repeat. Several apps mishandle polyphonic aftertouch: channel pressure or a CC (for example 11) or off may suit them better.</p>
+    </div>
+  </section>
+
+  <section id="tab-controls" role="tabpanel" hidden>
+    <div class="card">
+      <h2>Encoder</h2>
+      <div class="row"><div class="field"><span>Turning sends CC</span><span id="f-enc_cc"></span></div></div>
+      <div class="row"><div class="field"><span>Mode</span><select id="f-enc_mode"></select></div>
+        <div class="field"><span>Start value (absolute)</span><input type="number" id="f-enc_init" min="0" max="127"></div></div>
+      <p class="muted">Pressing and touching the encoder are two more buttons (Buttons tab, "Encoder").</p>
+    </div>
+    <div class="card">
+      <h2>Encoder targets</h2>
+      <p class="muted">Buttons set to <em>Encoder target</em> point the encoder at one of these CCs instead (absolute values, shown on the screen); pressing the same button again goes back to the CC above.</p>
+      <div class="row"><div class="field"><span>Target 1 CC</span><span id="f-enc_tgt0"></span></div><div class="field"><span>Target 2 CC</span><span id="f-enc_tgt1"></span></div><div class="field"><span>Target 3 CC</span><span id="f-enc_tgt2"></span></div></div>
+    </div>
+    <div class="card">
+      <h2>Touch strip</h2>
+      <div class="row"><div class="field"><span>Position sends CC</span><span id="f-strip_cc"></span></div></div>
+      <div class="row"><label class="field"><input type="checkbox" id="f-flags0"><span>Send 0 when the finger leaves the strip</span></label></div>
+    </div>
+    <div class="card">
+      <h2>General</h2>
+      <div class="row"><div class="field"><span>MIDI channel</span><select id="f-channel"></select></div>
+        <div class="field"><span>Buttons that send a CC</span><select id="f-btn_mode"></select></div></div>
+      <div class="row"><div class="field"><span>Pad velocity gain</span><select id="f-vel_shift"></select></div>
+        <div class="field"><span>Pad sensitivity</span><span id="f-sens"></span></div></div>
+      <p class="muted">Velocity gain scales how hard you have to hit for a given velocity (and the pressure messages). The sensitivity sets the threshold at which a touch counts as a hit; "device default" keeps the value the device has stored.</p>
+    </div>
+  </section>
+
+  <section id="tab-leds" role="tabpanel" hidden>
+    <div class="card">
+      <h2>Local lighting</h2>
+      <p class="muted">The device lights itself, without any app sending LED messages.</p>
+      <div class="row"><label class="field"><input type="checkbox" id="f-led0"><span>Buttons rest dimly lit</span></label></div>
+      <div class="row"><label class="field"><input type="checkbox" id="f-led1"><span>Buttons light up while pressed (or while on, in toggle mode)</span></label></div>
+      <div class="row"><label class="field"><input type="checkbox" id="f-led2"><span>Pads rest in their colour</span></label></div>
+      <div class="row"><label class="field"><input type="checkbox" id="f-led3"><span>Pads flash when hit</span></label></div>
+      <div class="row"><label class="field"><input type="checkbox" id="f-led4"><span>The touch strip lights the LED under the finger</span></label></div>
+    </div>
+    <div class="card">
+      <h2>Colours and levels</h2>
+      <div class="row"><div class="field"><span>Pad colour</span><div class="swatches" id="sw-pad"></div></div></div>
+      <div class="row"><div class="field"><span>Strip colour</span><div class="swatches" id="sw-strip"></div></div></div>
+      <div class="row"><div class="field"><span>Button at rest</span><select id="f-btn_led_idle"></select></div>
+        <div class="field"><span>Button when pressed</span><select id="f-btn_led_on"></select></div></div>
+      <div class="row"><div class="field"><span>LED messages from apps arrive on channel</span><select id="f-led_channel"></select></div></div>
+      <p class="muted">An app can light single LEDs with Note On messages on that channel (note = LED number), or a pad with its own note on the main channel; velocity = colour × 4 + brightness.</p>
+    </div>
+  </section>
+
+  <section id="tab-device" role="tabpanel" hidden>
+    <div class="card">
+      <h2>On the device</h2>
+      <dl class="kv" id="devinfo"></dl>
+      <div class="row" style="margin-top:14px">
+        <button id="btn-defaults">Back to defaults (not saved)</button>
+        <button id="btn-erase" class="danger">Erase saved settings</button>
+      </div>
+      <p class="muted">"Save on device" keeps the mapping across power cycles. Erasing the saved settings also puts the defaults back.</p>
+    </div>
+    <div class="card">
+      <h2>Preset slots on the device</h2>
+      <div id="slots"></div>
+      <p class="muted">Four configurations kept in the device's own flash, to switch without a computer (buttons set to <em>Preset slot</em>; the Maschine-like preset uses Scene / Pattern / Events / Variation, Shift stores). <em>Store current</em> keeps what is active now; <em>Make active</em> loads a slot (not saved as the power-up configuration: <em>Save on device</em> does that).</p>
+    </div>
+    <div class="card"><h2>Messages</h2><pre class="log" id="log" aria-live="off"></pre></div>
+  </section>
+
+  <section id="tab-firmware" role="tabpanel" hidden>
+    <div class="card">
+      <h2>Firmware</h2>
+      <div class="row" role="radiogroup" aria-label="What to flash">
+        <label class="field"><input type="radio" name="fwmode" value="midi" checked><span style="min-width:0;color:var(--text)">Install the MIDI firmware</span></label>
+        <label class="field"><input type="radio" name="fwmode" value="stock"><span style="min-width:0;color:var(--text)">Restore NI's original firmware</span></label>
+      </div>
+      <p class="note" id="usb-note">Flashing needs Chrome or Edge (WebUSB). Close every other program that uses the Maschine (NI Controller Editor, other browser tabs with MIDI or USB access), then work through the steps. Restoring works from your own copy of NI's firmware, so it does not depend on NI's updater (which macOS is about to stop supporting): save the copy in step 1.</p>
+      <ol class="steps" id="steps">
+        <li id="st-file"><strong>NI's firmware file</strong>
+          <p class="muted">The patch is applied to your own copy of NI's firmware (v1.20); nothing is uploaded anywhere, and none of NI's code is part of this page. Choose NI's firmware updater (the file <code>MM3Updater</code> on a Mac, the <code>.exe</code> on Windows) or the 40,392-byte image you saved earlier.</p>
+          <input type="file" id="file-fw"> <div id="fw-result" class="muted" style="margin-top:8px"></div>
+          <div class="row" style="margin-top:8px"><button id="btn-keep" hidden>Save a copy of NI's original firmware</button><span id="keep-result" class="muted"></span></div></li>
+        <li id="st-image" class="off"><strong>The image to flash</strong><div id="img-result" class="muted"></div></li>
+        <li id="st-usb" class="off"><strong>Select the Maschine</strong>
+          <p class="muted">The browser asks which USB device to use. Choose <em>Maschine Mikro MK3</em>.</p>
+          <button id="btn-usb" disabled>Select the Maschine…</button> <span id="usb-result" class="muted"></span></li>
+        <li id="st-flash" class="off"><strong>Flash</strong>
+          <label class="field"><input type="checkbox" id="ack"><span id="ack-text" style="min-width:0;color:var(--text)">I have a copy of NI's original firmware saved (step 1) so that I can restore it, and I will not unplug the device while this runs.</span></label>
+          <div class="row" style="margin-top:8px"><button id="btn-flash" class="primary" disabled>Flash now</button><button id="btn-usb2" hidden>Select the bootloader…</button></div>
+          <progress id="prog" value="0" max="100" hidden></progress><div id="flash-result" class="muted" style="margin-top:6px"></div></li>
+      </ol>
+    </div>
+  </section>
+</main>
+
+<dialog id="dlg" aria-labelledby="dlg-title">
+  <form method="dialog" id="dlg-form">
+    <h3 id="dlg-title">Save as preset</h3>
+    <label>Name<input type="text" id="dlg-name" maxlength="56" required autocomplete="off"></label>
+    <label>Description <span class="muted">(optional)</span><textarea id="dlg-desc" maxlength="400" rows="3"></textarea></label>
+    <menu><button type="submit" value="cancel" formnovalidate>Cancel</button><button type="submit" value="ok" class="primary" id="dlg-ok">Save</button></menu>
+  </form>
+</dialog>
+
+<footer id="status" role="status" aria-live="polite"><div class="wrap"><span id="status-text">Ready. Press Connect to talk to the device, or edit offline and send later.</span></div></footer>
+<script type="module" src="app.js"></script>
+</body>
+</html>
