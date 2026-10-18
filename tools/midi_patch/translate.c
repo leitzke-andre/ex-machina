@@ -212,6 +212,10 @@ struct state {              /* RAM above the firmware's stack, zeroed by mmk3_in
     u32 vsig;               /* what it was last drawn for (a change of any part of it sets vdirty) */
     u8 vgen;                /* bumped when the sequencer grid changes without anything in vsig changing */
     char vs[24];            /* the status line of the idle screen / the top line of the sequencer grid */
+    char vd[24];            /* the detail line of the idle screen while notes are shown: their names; empty = the version */
+    u32 vnotes[4];          /* the notes the idle screen shows (bit n = note n): those sounding, kept for NOTE_HOLD_MS after the last one stopped */
+    u16 nt0;                /* when the last note stopped (the stock millisecond counter) */
+    u8 nt_on;               /* nt0 is running */
 };
 #define ST_ADDR 0x20004200u
 #define ST ((struct state *)ST_ADDR)
@@ -322,6 +326,7 @@ enum { T_PADMODE, T_KEYBOARD, T_FIXVEL, T_VEL16, T_VELOCITY, T_TRANSPOSE, T_PANI
  * generation that wrote the screen). A region is therefore written only when this counter is 0. */
 #define DISP_BUSY (*(volatile u8 *)0x200010F0)
 #define MSG_MS 1500                                       /* how long a message stays */
+#define NOTE_HOLD_MS 500                                  /* how long the notes stay on the screen after the last one stopped (a staccato note is readable) */
 enum { D_IDLE, D_MSG0, D_MSG1, D_SHOW, D_VIEW0, D_VIEW1 };
 
 static u32 tc(char *b, u32 p, char ch, u32 lim) { if (p < lim) b[p++] = ch; return p; }
@@ -390,7 +395,7 @@ static u32 col_msg(const struct state *s, u32 x)          /* a message: title, d
 }
 static u32 col_idle(const struct state *s, u32 x)         /* the idle screen: the firmware's name and version, then a status line */
 {
-    return title_col(txt(T_EXNAME), x) << 1 | text_col(txt(T_VER), 15, x, 4) << 17 | text_col(s->vs, 21, x, 4) << 25;
+    return title_col(txt(T_EXNAME), x) << 1 | (s->vd[0] ? text_col(s->vd, 21, x, 4) : text_col(txt(T_VER), 15, x, 4)) << 17 | text_col(s->vs, 21, x, 4) << 25;
 }
 
 /* One half of the picture straight into the stock staging buffer. Bytes are inverted at the end: a lit pixel is a cleared bit. */
@@ -422,6 +427,8 @@ static u32 disp_write(struct state *s, u32 half, u32 msg)
     return ok;
 }
 
+static void notes_tick(struct state *s);                  /* which notes the idle screen shows now */
+static void view_notes(struct state *s);
 static void view_build(struct state *s);                  /* the status / top line of the picture behind the messages */
 static u32 view_sig(const struct state *s);               /* everything that picture shows, in one number */
 
@@ -430,6 +437,7 @@ static void disp_tick(struct state *s)
 {
     u16 now = MS16;
     u32 sig = view_sig(s);
+    notes_tick(s);
     if (sig != s->vsig) { s->vsig = sig; s->vdirty = 1; }
     switch (s->dstate) {
     case D_IDLE: if (s->vdirty) { s->vdirty = 0; view_build(s); s->dstate = D_VIEW0; } break;
@@ -744,6 +752,44 @@ static void seq_pad(struct state *s, const struct cfg *c, u8 pad)
 }
 
 /* ---- the picture behind the messages ---- */
+/* The notes sounding now, from every source: the pads held (a chord pad has up to 4), what the arp, the sequencer and the strip have sounding. Bit n of nb[n >> 5]. */
+static void note_set(u32 *nb, u32 n) { nb[n >> 5] |= 1u << (n & 31); }
+static void sounding(const struct state *s, const struct cfg *c, u32 *nb)
+{
+    u32 k, j;
+    nb[0] = nb[1] = nb[2] = nb[3] = 0;
+    for (k = 0; k < 16; k++) if ((s->held >> k) & 1) for (j = 0; j < s->cnn[k]; j++) note_set(nb, s->cn[k][j] & 127u);       /* (a pad held through the arp has no notes of its own) */
+    for (k = 0; k < s->sonn && k < 16; k++) note_set(nb, s->son[k] & 127u);
+    for (k = 0; k < 16; k++) if ((s->seq_son >> k) & 1) note_set(nb, c->pad_note[padnum((u8)k)] & 127u);
+    if (s->strum) note_set(nb, (u32)(s->strum - 1) & 127u);
+}
+/* Keeps s->vnotes = the notes to show: the sounding ones as they change, and the last ones for NOTE_HOLD_MS after the last of them stopped. */
+static void notes_tick(struct state *s)
+{
+    u32 nb[4], k, any = 0, same = 1;
+    sounding(s, s->cfgp, nb);
+    for (k = 0; k < 4; k++) { any |= nb[k]; same &= nb[k] == s->vnotes[k]; }
+    if (any) {
+        s->nt_on = 0;
+        if (!same) { for (k = 0; k < 4; k++) s->vnotes[k] = nb[k]; s->vdirty = 1; }
+    } else if (s->vnotes[0] | s->vnotes[1] | s->vnotes[2] | s->vnotes[3]) {
+        if (!s->nt_on) { s->nt_on = 1; s->nt0 = MS16; }
+        else if ((u16)(MS16 - s->nt0) >= NOTE_HOLD_MS) { for (k = 0; k < 4; k++) s->vnotes[k] = 0; s->nt_on = 0; s->vdirty = 1; }
+    }
+}
+static void view_notes(struct state *s)                   /* the detail line of the idle screen: the note names, lowest first; with more than 5 the first 4 and "+n" */
+{
+    u32 n, p = 0, shown = 0, total = 0;
+    for (n = 0; n < 128; n++) total += (s->vnotes[n >> 5] >> (n & 31)) & 1;
+    for (n = 0; n < sizeof s->vd; n++) s->vd[n] = 0;
+    for (n = 0; n < 128 && total; n++) {
+        if (!((s->vnotes[n >> 5] >> (n & 31)) & 1)) continue;
+        if (total > 5 && shown == 4) { p = tc(s->vd, p, ' ', 21); p = tc(s->vd, p, '+', 21); tn(s->vd, p, total - 4, 21); break; }
+        if (shown) p = tc(s->vd, p, ' ', 21);
+        p = tnote(s->vd, p, (int)n, 21); shown++;
+    }
+}
+
 static u32 view_sig(const struct state *s)
 {
     u32 v = (u32)s->padmode | (u32)(s->cfgp->channel & 15) << 2 | (u32)s->arp_on << 6 | (u32)s->clock_out << 7 | (u32)s->bpm << 8;
@@ -762,6 +808,7 @@ static void view_build(struct state *s)                   /* the status line of 
         if (s->seq_on) { p = tc(s->vs, p, ' ', 21); tx(s->vs, p, T_RUN, 21); }
         return;
     }
+    view_notes(s);
     p = tx(s->vs, 0, T_M0 + (s->padmode > 2 ? 0 : s->padmode), 21); p = tc(s->vs, p, ' ', 21);
     p = tx(s->vs, p, T_CH, 21); p = tn(s->vs, p, (u32)(c->channel & 15) + 1, 21); p = tc(s->vs, p, ' ', 21); p = tn(s->vs, p, s->bpm, 21);
     if (s->arp_on) { p = tc(s->vs, p, ' ', 21); p = tx(s->vs, p, T_ARP, 21); }

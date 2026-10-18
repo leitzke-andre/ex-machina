@@ -43,10 +43,10 @@ def reference(title, detail, bar=None):
             rows = range(1, 7) if x in (4, 123) else [1, 6] + (list(range(2, 6)) if x - 5 < bar else [])
             for r in rows: lit.add((x, 24 + r))
     return _pack(lit)
-def idle(status, name='EX-MACHINA', version='V0'):
-    """The idle screen: the firmware's name at twice the size, the version, a status line."""
+def idle(status, detail='V0', name='EX-MACHINA'):
+    """The idle screen: the firmware's name at twice the size, the detail line (the version, or the names of the notes sounding), a status line."""
     lit = set()
-    _title(lit, name); _text(lit, version, 4, 17); _text(lit, status, 4, 25)
+    _title(lit, name); _text(lit, detail, 4, 17); _text(lit, status, 4, 25)
     return _pack(lit)
 
 def seq_grid(top, steps, cur=None):
