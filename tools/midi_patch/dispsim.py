@@ -5,7 +5,7 @@ import random, struct
 import build_patch as bp
 
 MS16 = 0x200010E8
-FB, DISP_FLAG, DISP_HDR, DISP_DATA = 0x200010F2, 0x200012F8, 0x200013A1, 0x200013A9
+FB, DISP_FLAG, DISP_HDR, DISP_DATA, DISP_BUSY = 0x200010F2, 0x200012F8, 0x200013A1, 0x200013A9, 0x200010F0
 
 FONT = bp.FONT
 def glyph(ch):
@@ -68,8 +68,9 @@ def seq_grid(top, steps, cur=None):
 
 class Screen:
     """What the stock main loop does with the staging buffer, applied after every tick; counts the regions it was handed."""
-    def __init__(self, d, seed=11):
-        self.d = d; self.regions = 0; self.seen = []                                      # seen: (page, h, data) of every region applied
+    def __init__(self, d, seed=11, sender=8):
+        """sender = how many of the stock sender's 8 chunks it gets through per tick (8: a whole refresh per tick, 1: one per main-loop pass like the real one)."""
+        self.d = d; self.sender = sender; self.busy_applies = 0; self.regions = 0; self.seen = []                                      # seen: (page, h, data) of every region applied
         self.original = bytes(random.Random(seed).randrange(256) for _ in range(512))       # stands in for what the stock firmware drew at start-up (NI's logo)
         d.mu.mem_write(FB, self.original); d.mu.mem_write(MS16, struct.pack('<H', 5000))
     def ms(self): return struct.unpack('<H', self.d.mu.mem_read(MS16, 2))[0]
@@ -82,9 +83,15 @@ class Screen:
             data = bytes(mu.mem_read(DISP_DATA, w * hh))
             for pg in range(hh):
                 for c in range(w): mu.mem_write(FB + (page + pg) * 128 + x + c, bytes([data[pg * w + c]]))
+            st = mu.mem_read(DISP_BUSY, 1)[0]                      # what the stock apply routine does to the sender's counter (0x08003fb8)
+            if st: self.busy_applies += 1                          # ... a second region while it is still sending: the glitch on the real screen
+            mu.mem_write(DISP_BUSY, bytes([8 if st == 0 else st | 0x80]))
             self.seen.append((page, hh, data)); mu.mem_write(DISP_FLAG, b'\0'); self.regions += 1
+    def sender_step(self):                                         # the stock sender: one chunk per pass (a counter with bit 7 set is the confused state)
+        st = self.d.mu.mem_read(DISP_BUSY, 1)[0]
+        if st and not st & 0x80: self.d.mu.mem_write(DISP_BUSY, bytes([max(0, st - self.sender)]))
     def run(self, ticks=8, ms=3):
-        for _ in range(ticks): self.advance(ms); self.d.tick(0); self.apply()
+        for _ in range(ticks): self.advance(ms); self.d.tick(0); self.apply(); self.sender_step()
     def fb(self): return bytes(self.d.mu.mem_read(FB, 512))
     def settle(self, ms=10): self.run(300, ms)                      # long enough for any message to end and the idle screen to be drawn
 

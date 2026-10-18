@@ -79,4 +79,21 @@ for phase in ('msg0', 'msg1', 'view0', 'view1'):
     check(f'{phase}: a host display region injected at {taken_n} different points of the tick ({masked_n} of them inside the masked section, taken after it): '
           f'every region the stock loop was handed is a whole known region ({host_seen} runs applied the host\'s)', bad, [])
     check(f'{phase}: ... and the idle screen is there in every run (unless the host drew after our write of that half: then its picture stays)', final_bad, [])
+# ---- the stock sender (found on the device: a flickering bar at the bottom right of every message) ----------------------------------------------------------
+# NI's code sends the framebuffer to the display in 8 chunks, one per main-loop pass; a region applied while that is still going confuses it (docs/midi-patch.md).
+# The model gives the sender one chunk per tick, like the real loop, and counts the regions that were applied while it was busy.
+KEYS = mc.BUTTON_NAMES.index('Keyboard'); PADM = mc.BUTTON_NAMES.index('Pad Mode'); VOL = mc.BUTTON_NAMES.index('Volume')
+d = devsim.Dev(fw, data, CFG); d.translate(report1()); d.start(); sc = Screen(d, sender=1)
+sc.run(60, 3)
+for k in (KEYS, PADM, KEYS, VOL):                                     # messages one after the other, then the idle screen coming back
+    d.translate(report1([k])); d.translate(report1()); sc.run(30, 3)
+sc.run(1200, 3)
+check('with a sender that takes one chunk per pass, no region is ever applied while it is still sending (start-up, four messages, the idle screen after each)',
+      (sc.busy_applies, sc.regions >= 8), (0, True))
+check('... and the picture is the right one at the end', sc.fb() == idle('KEYS CH1 120'), True)
+d.translate(report1([KEYS])); d.translate(report1()); sc.run(3, 3)
+sc.advance(0); before = sc.regions
+d.send_sysex(HOST_MSG)                                                  # a host region while a refresh is still going: dropped, not applied on top of it
+sc.run(1, 3)
+check('a host display region that arrives while the sender is busy is dropped (it would trigger the same glitch)', sc.busy_applies, 0)
 print('ALL PASS' if ok else 'SOME FAILED'); sys.exit(0 if ok else 1)

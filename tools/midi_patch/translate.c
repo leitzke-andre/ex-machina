@@ -316,6 +316,11 @@ enum { T_PADMODE, T_KEYBOARD, T_FIXVEL, T_VEL16, T_VELOCITY, T_TRANSPOSE, T_PANI
 #define DISP_HDR ((volatile u8 *)0x200013A1)              /* struct + 0x379: x,0,page,0,w,0,h,0 (u16 each) */
 #define DISP_DATA ((volatile u8 *)0x200013A9)             /* pixel bytes, 1 byte = 8 vertical pixels of one column */
 #define DISP_FLAG (*(volatile u8 *)0x200012F8)            /* struct + 0x2d0: "display region pending" */
+/* The stock code sends the framebuffer to the display in 8 chunks of 64 columns, one per main-loop pass (0x080068b0); struct + 0xc8 counts the chunks left. The
+ * apply routine sets it to 8, or, if it is not 0, ORs 0x80 into it, and the sender then repeats the last chunk (page 3, columns 64-127) with a pointer that runs
+ * on through the framebuffer and past its end: a bar of changing pixels at the bottom right of the screen (seen on the device with every message, since the first
+ * generation that wrote the screen). A region is therefore written only when this counter is 0. */
+#define DISP_BUSY (*(volatile u8 *)0x200010F0)
 #define MSG_MS 1500                                       /* how long a message stays */
 enum { D_IDLE, D_MSG0, D_MSG1, D_SHOW, D_VIEW0, D_VIEW1 };
 
@@ -407,7 +412,7 @@ static u32 disp_write(struct state *s, u32 half, u32 msg)
 {
     u32 ok = 0, pm;
     __asm__ volatile("mrs %0, primask\n\tcpsid i" : "=r"(pm) :: "memory");
-    if (!DISP_FLAG) {
+    if (!DISP_FLAG && !DISP_BUSY) {
         render_half(s, half, msg);
         DISP_HDR[0] = 0; DISP_HDR[1] = 0; DISP_HDR[2] = (u8)(half * 2); DISP_HDR[3] = 0;
         DISP_HDR[4] = 128; DISP_HDR[5] = 0; DISP_HDR[6] = 2; DISP_HDR[7] = 0;
@@ -1872,7 +1877,7 @@ static void sysex_done(void)
     if (n < 4 || b[0] != 0x7D || b[1] != 0x4D || b[2] != 0x4B) return;
     if (b[3] == 1 && n >= 8) {
         u32 x = b[4], page = b[5], w = b[6] + 1u, h = b[7] + 1u, cnt = w * h, k = 0;
-        if (x + w > 128 || page + h > 4 || cnt > 256 || DISP_FLAG) return;
+        if (x + w > 128 || page + h > 4 || cnt > 256 || DISP_FLAG || DISP_BUSY) return;     /* (a host paces its regions: one that arrives while the last is still being sent is dropped) */
         for (i = 8; i < n && k < cnt; i += 8) {
             u32 j;
             for (j = 1; j < 8 && i + j < n && k < cnt; j++, k++)
