@@ -1,8 +1,8 @@
 // The page: edit the Mikro MK3's mapping, send it to the device (Web MIDI SysEx), keep it there, and flash the patched firmware (WebUSB DFU).
-// Everything runs in the browser; nothing is uploaded. The protocol is mmk3.js, the flashing is dfu.js + patch.js.
+// Everything runs in the browser; nothing is uploaded. The protocol is mmk3.js, the flashing is flasher/dfu.js + patch.js.
 import * as M from './mmk3.js';
 import * as P from './patch.js';
-import * as F from './dfu.js';
+import * as F from './flasher/dfu.js';
 import * as PR from './presets.js';
 import { makeMock } from './mock.js';
 

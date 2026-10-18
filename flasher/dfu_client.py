@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Minimal USB DFU 1.1 client for the Maschine Mikro MK3, mirroring what NI's updater does
+"""Minimal USB DFU 1.1 client for the Native Instruments Maschine Mikro MK3 bootloader, mirroring what NI's updater does
 (`MM3Updater`: DFUDevice::sendDFUDetach / reconnectInDFUMode / writeImage / returnToAPPMode).
 
-NI's own updater can only flash the image it carries, so a patched image needs another client.
-Everything here is a DRY RUN unless --yes-flash is given. The protocol logic is tested against a
-mock device in `test_dfu_client.py`; it has never talked to real hardware.
+NI's own updater can only flash the image it carries, so another image needs another client. This one flashed the real device many times
+(see README.md and PROTOCOL.md in this directory). Everything here is a DRY RUN unless --yes-flash is given. The protocol logic is tested
+against a mock device in `test_dfu_client.py`. The device it knows is the profile MIKRO_MK3 below; other values can be given on the command
+line (--vid --pid --dfu-pid --app-base --app-limit).
 
     dfu_client.py info                         # list the device and its DFU interface (read-only)
     dfu_client.py flash image.bin              # dry run: validate the image and print the plan
@@ -13,10 +14,12 @@ mock device in `test_dfu_client.py`; it has never talked to real hardware.
 Needs `pip install pyusb` and libusb only for the real transport; the logic works with any transport
 object that has ctrl_in/ctrl_out.
 """
-import argparse, struct, sys, time
+import argparse, collections, struct, sys, time
 
-VID, PID_RUNTIME, PID_DFU = 0x17CC, 0x1700, 0x1702
-APP_BASE, APP_LIMIT = 0x08003000, 0x0801F000       # application area (settings pages start at 0x0801F000)
+# What is specific to a device: its USB ids (normal mode / DFU mode) and the flash area an application image may occupy.
+Profile = collections.namedtuple('Profile', 'name vid pid_runtime pid_dfu app_base app_limit')
+MIKRO_MK3 = Profile('Maschine Mikro MK3', 0x17CC, 0x1700, 0x1702, 0x08003000, 0x0801F000)   # the NI settings pages start at 0x0801F000
+VID, PID_RUNTIME, PID_DFU, APP_BASE, APP_LIMIT = MIKRO_MK3.vid, MIKRO_MK3.pid_runtime, MIKRO_MK3.pid_dfu, MIKRO_MK3.app_base, MIKRO_MK3.app_limit
 DFU_DETACH, DFU_DNLOAD, DFU_GETSTATUS, DFU_CLRSTATUS, DFU_GETSTATE, DFU_ABORT = 0, 1, 3, 4, 5, 6
 S_APP_IDLE, S_APP_DETACH, S_IDLE, S_DNLOAD_SYNC, S_DNBUSY, S_DNLOAD_IDLE, S_MANIFEST_SYNC, S_MANIFEST, S_MANIFEST_WAIT_RESET, S_UPLOAD_IDLE, S_ERROR = range(11)
 
@@ -25,8 +28,9 @@ class DfuError(Exception):
     pass
 
 
-def validate_image(img):
+def validate_image(img, profile=MIKRO_MK3):
     """Sanity checks on a Cortex-M application image for this device. Returns a list of problems."""
+    APP_BASE, APP_LIMIT = profile.app_base, profile.app_limit
     problems = []
     if len(img) < 0x200: problems.append('image is too small to contain a vector table')
     if len(img) > APP_LIMIT - APP_BASE: problems.append(f'image is larger than the application area ({APP_LIMIT - APP_BASE:#x} bytes)')
@@ -91,12 +95,12 @@ def download(t, img, block=64, progress=None, sleep=time.sleep):
     raise DfuError('manifestation did not finish')
 
 
-def wait_for_device(find, pids, timeout=20.0, sleep=time.sleep, step=0.5):
+def wait_for_device(find, pids, timeout=20.0, sleep=time.sleep, step=0.5, vid=VID):
     """Poll find(idVendor=VID, idProduct=pid) for each pid until a device shows up or `timeout` seconds have passed; returns it or None."""
     waited = 0.0
     while True:
         for pid in pids:
-            dev = find(idVendor=VID, idProduct=pid)
+            dev = find(idVendor=vid, idProduct=pid)
             if dev is not None: return dev
         if waited >= timeout: return None
         sleep(step); waited += step
@@ -124,22 +128,27 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('cmd', choices=('info', 'flash')); ap.add_argument('image', nargs='?')
     ap.add_argument('--yes-flash', action='store_true', help='actually write to the device (exit status 0 only if the device is back in normal mode)')
+    ap.add_argument('--vid', type=lambda x: int(x, 0), default=MIKRO_MK3.vid); ap.add_argument('--pid', type=lambda x: int(x, 0), default=MIKRO_MK3.pid_runtime, help='product id in normal mode')
+    ap.add_argument('--dfu-pid', type=lambda x: int(x, 0), default=MIKRO_MK3.pid_dfu, help='product id in the bootloader')
+    ap.add_argument('--app-base', type=lambda x: int(x, 0), default=MIKRO_MK3.app_base); ap.add_argument('--app-limit', type=lambda x: int(x, 0), default=MIKRO_MK3.app_limit)
     a = ap.parse_args(argv)
+    prof = MIKRO_MK3._replace(vid=a.vid, pid_runtime=a.pid, pid_dfu=a.dfu_pid, app_base=a.app_base, app_limit=a.app_limit)
+    VID, PID_RUNTIME, PID_DFU, APP_BASE = prof.vid, prof.pid_runtime, prof.pid_dfu, prof.app_base
     if a.cmd == 'flash':
         if not a.image: ap.error('flash needs an image')
         img = open(a.image, 'rb').read()
-        problems = validate_image(img)
+        problems = validate_image(img, prof)
         print(f'image {a.image}: {len(img)} bytes, flash {APP_BASE:#x}-{APP_BASE + len(img) - 1:#x}')
         for p in problems: print('  PROBLEM:', p)
         if problems: return 2
         if not a.yes_flash:
-            print('dry run: would send DFU_DETACH to the runtime device (17cc:1700), wait for the bootloader (17cc:1702),\n'
+            print(f'dry run: would send DFU_DETACH to the runtime device ({VID:04x}:{PID_RUNTIME:04x}), wait for the bootloader ({VID:04x}:{PID_DFU:04x}),\n'
                   'download the image in 64-byte blocks, finish with a zero-length block and a DFU_DETACH to leave DFU.\n'
                   'Re-run with --yes-flash to do it.')
             return 0
     import usb.core
     dev = usb.core.find(idVendor=VID, idProduct=PID_RUNTIME) or usb.core.find(idVendor=VID, idProduct=PID_DFU)
-    if dev is None: print('no Maschine Mikro MK3 found'); return 1
+    if dev is None: print(f'no {prof.name} found'); return 1
     intf, runtime, attrs, tmo, xfer = find_dfu_interface(dev)
     print(f'found {dev.idVendor:04x}:{dev.idProduct:04x} bcdDevice {dev.bcdDevice:#06x}, DFU interface {intf} ({"runtime" if runtime else "DFU mode"}), '
           f'attributes {attrs:#04x}, transfer size {xfer}')
@@ -152,7 +161,7 @@ def main(argv=None):
         for _ in range(50):
             time.sleep(0.2); dev = usb.core.find(idVendor=VID, idProduct=PID_DFU)
             if dev: break
-        if dev is None: raise DfuError('bootloader (17cc:1702) did not appear')
+        if dev is None: raise DfuError(f'bootloader ({VID:04x}:{PID_DFU:04x}) did not appear')
         intf, _, attrs, tmo, xfer = find_dfu_interface(dev); t = UsbTransport(dev, intf)
     result = download(t, img, block=xfer or 64, progress=lambda d, n: print(f'\r  {d}/{n}', end=''))
     if result == 'reset':
@@ -161,12 +170,12 @@ def main(argv=None):
         print('\ndownload finished; leaving DFU mode')
         try: t.ctrl_out(DFU_DETACH, tmo)
         except Exception: pass
-    back = wait_for_device(usb.core.find, (PID_RUNTIME, PID_DFU), timeout=20)
+    back = wait_for_device(usb.core.find, (PID_RUNTIME, PID_DFU), timeout=20, vid=VID)
     if back is None:
-        print('the device did not come back within 20 s: wait three minutes, replug it, then restore with NI\'s updater'); return 5
+        print('the device did not come back within 20 s: wait three minutes, replug it, then restore the original firmware with the vendor\'s updater or this tool'); return 5
     print(f'back as {back.idVendor:04x}:{back.idProduct:04x}, bcdDevice {back.bcdDevice:#06x}')
     if back.idProduct == PID_DFU:
-        print('it is still in the bootloader (17cc:1702): the image was not accepted or did not boot; restore with NI\'s updater'); return 4
+        print(f'it is still in the bootloader ({VID:04x}:{PID_DFU:04x}): the image was not accepted or did not boot; flash the original firmware again'); return 4
     return 0
 
 

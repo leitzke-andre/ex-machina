@@ -1,17 +1,19 @@
-// USB DFU 1.1 for the Maschine Mikro MK3 in the browser (WebUSB): a port of tools/dfu_client.py, which flashed this device from the
-// command line. The protocol part works on any transport with ctrlOut / ctrlIn and is tested against a mock device in test_flash.mjs;
-// webUsbTransport() is the real one.
+// USB DFU 1.1 for the Native Instruments Maschine Mikro MK3 bootloader in the browser (WebUSB): a port of dfu_client.py, which flashed this device from
+// the command line. The protocol part works on any transport with ctrlOut / ctrlIn and is tested against a mock device in test_dfu.mjs;
+// webUsbTransport() is the real one. What is specific to a device is the profile MIKRO_MK3 (USB ids, the flash area an image may occupy).
 
-export const VID = 0x17cc, PID_RUNTIME = 0x1700, PID_DFU = 0x1702;
-export const APP_BASE = 0x08003000, APP_LIMIT = 0x0801ec00;             // the image must end below the save page of the run-time configuration
+
+export const MIKRO_MK3 = { name: 'Maschine Mikro MK3', vid: 0x17cc, pidRuntime: 0x1700, pidDfu: 0x1702, appBase: 0x08003000, appLimit: 0x0801f000 };   // NI's settings pages start at 0x0801f000
+export const VID = MIKRO_MK3.vid, PID_RUNTIME = MIKRO_MK3.pidRuntime, PID_DFU = MIKRO_MK3.pidDfu, APP_BASE = MIKRO_MK3.appBase, APP_LIMIT = MIKRO_MK3.appLimit;
 export const REQ = { DETACH: 0, DNLOAD: 1, GETSTATUS: 3, CLRSTATUS: 4, GETSTATE: 5, ABORT: 6 };
 export const S = { APP_IDLE: 0, APP_DETACH: 1, IDLE: 2, DNLOAD_SYNC: 3, DNBUSY: 4, DNLOAD_IDLE: 5, MANIFEST_SYNC: 6, MANIFEST: 7, MANIFEST_WAIT_RESET: 8, UPLOAD_IDLE: 9, ERROR: 10 };
 
 export class DfuError extends Error {}
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Sanity checks on an application image for this device; returns a list of problems. */
-export function validateImage(img) {
+/** Sanity checks on an application image for a device (default: the Mikro MK3); returns a list of problems. */
+export function validateImage(img, profile = MIKRO_MK3) {
+  const APP_BASE = profile.appBase, APP_LIMIT = profile.appLimit;
   const problems = [];
   if (img.length < 0x200) problems.push('image is too small to contain a vector table');
   if (img.length > APP_LIMIT - APP_BASE) problems.push(`image is larger than the application area (${(APP_LIMIT - APP_BASE).toString(16)} bytes)`);

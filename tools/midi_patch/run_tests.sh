@@ -30,10 +30,13 @@ if command -v node >/dev/null 2>&1; then
   echo "== browser UI: presets (words, differences, the store, files)"
   node "$UI/test_presets.mjs" | tail -3
   echo "== browser UI: every module parses as an ES module (a duplicate name would stop the page from loading)"
-  for f in app mmk3 presets dfu patch mock mmk3_data; do node --input-type=module --check < "$UI/$f.js" || { echo "FAIL: $f.js does not parse as a module"; exit 1; }; done; echo "ALL PASS"
+  for f in app mmk3 presets patch mock mmk3_data; do node --input-type=module --check < "$UI/$f.js" || { echo "FAIL: $f.js does not parse as a module"; exit 1; }; done
+  node --input-type=module --check < "$UI/../../flasher/dfu.js" || { echo "FAIL: flasher/dfu.js does not parse as a module"; exit 1; }; echo "ALL PASS"
   echo "== browser UI: image building and the DFU port"
   node "$UI/test_flash.mjs" "$STOCK" "$WORK/patched.bin" | tail -3
 else echo "== node not found: the browser UI tests are skipped"; fi
+echo "== the flasher (its own tests: mock DFU device, no images)"
+"$HERE/../../flasher/run_tests.sh" "$PY" | grep -E "^(==|ALL PASS|SOME|FAIL)"
 echo "== enumerate_stock (model baseline on the unpatched image, and on the stage-1/2 images)"
 for f in "$STOCK" "$WORK/stage1.bin" "$WORK/stage2.bin"; do "$PY" "$HERE/../emu/enumerate_stock.py" "$f" "$WORK/data_init.bin" | tail -1; done
 echo "work files in $WORK (contain NI code: keep local)"

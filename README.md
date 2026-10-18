@@ -22,7 +22,8 @@ The patch is tested without hardware in an emulator (Unicorn, running the real s
 | `tools/midi_patch/` | the patch (`translate.c`), the image builder, the host-side config library / CLI (`mmk3_config.py`), and the emulator tests (`run_tests.sh`) |
 | `tools/ui/` | the browser tool: mapping editor, presets, flashing and restoring the firmware (Web MIDI + WebUSB; Chrome or Edge) |
 | `tools/emu/` | the Unicorn machine, USB and flash models |
-| `tools/*.py`, `tools/*.sh` | DFU client, guarded flashing, restore script, USB / HID / chip probes |
+| `flasher/` | self-contained DFU client for the NI bootloader (Python + WebUSB port), the guarded flash script, its tests and the protocol notes; could be its own project |
+| `tools/*.py`, `tools/*.sh` | the restore script (hash-gated NI image), USB / HID / chip probes, firmware carving |
 | `tools/ghidra/` | helper scripts used for the reverse engineering |
 | `docs/` | design notes and the research: reverse-engineering findings, what each source confirmed, the SysEx protocol, hardware plan and results, the chip probe |
 | `proprietary/` | **not committed** (see `.gitignore`): NI's manual, updaters, installer image and the unmodified stock firmware, kept locally for the build and the restore path |

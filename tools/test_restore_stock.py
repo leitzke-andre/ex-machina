@@ -27,7 +27,7 @@ with tempfile.TemporaryDirectory() as d:
     check('a longer image (e.g. a patched one) is refused', rc == 2 and calls == [], (rc, calls))
     rc, out, calls = run(os.path.join(d, 'missing.bin'))
     check('a missing file is refused with a hint', rc == 2 and calls == [] and 'carve_fw' in out, (rc, out))
-    default = os.path.join(HERE, '..', 'research', 'MM3_firmware_1.20_stock.bin')
+    default = os.path.join(HERE, '..', 'proprietary', 'MM3_firmware_1.20_stock.bin')
     if os.path.exists(default):
         rc, out, calls = run()
         check('without arguments it uses the copy saved in proprietary/', rc == 0 and len(calls) == 1 and calls[0].split()[0].endswith('proprietary/MM3_firmware_1.20_stock.bin'), (rc, calls))

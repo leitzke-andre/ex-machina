@@ -79,6 +79,8 @@ check('wait_for_device gives up after the timeout', D.wait_for_device(lambda **k
 check('validate_image accepts a plausible image', D.validate_image(image(40392)) == [])
 check('validate_image rejects an SP outside RAM', any('stack pointer' in p for p in D.validate_image(struct.pack('<II', 0x1000, 0x080031c1) + bytes(1000))))
 check('validate_image rejects a reset vector outside the image', any('reset vector' in p for p in D.validate_image(struct.pack('<II', 0x20001c18, 0x08100001) + bytes(1000))))
+small = D.MIKRO_MK3._replace(app_limit=D.MIKRO_MK3.app_base + 0x400)
+check('validate_image takes another profile: 0x500 bytes fit the Mikro MK3 but not a 0x400-byte area', D.validate_image(image(0x500)) == [] and any('larger' in p for p in D.validate_image(image(0x500), small)))
 check('validate_image rejects images larger than the application area', any('larger' in p for p in D.validate_image(image(0x1D000))))
 # DFU functional descriptor of the stock device (the same 9 bytes are in the patched configuration): attributes 0x09 = can
 # download + will detach, detach timeout 255 ms, transfer size 64, DFU version 1.10. The first run on the real device exposed a
