@@ -25,7 +25,7 @@ O_CHAN, O_PADNOTE, O_BTNCC, O_ENCCC, O_LEDCH, O_PADLED, O_BTNMODE, O_BTNACT, O_L
 ACT_CC, ACT_NOTE, ACT_START, ACT_CONT, ACT_STOP, ACT_MMC, ACT_NONE = range(7)
 LF_BTN_IDLE, LF_BTN_PRESS, LF_PAD_IDLE, LF_PAD_HIT, LF_STRIP = 1, 2, 4, 8, 16
 PLAY, REC, STOP, VOLUME = bp.BTN_PLAY, bp.BTN_REC, bp.BTN_STOP, 3
-assert bp.CFG_SIZE == 259 and (bp.ACT_CC, bp.ACT_NOTE, bp.ACT_START, bp.ACT_CONT, bp.ACT_STOP, bp.ACT_MMC, bp.ACT_NONE) == (0, 1, 2, 3, 4, 5, 6)
+assert bp.CFG_SIZE == 274 and (bp.ACT_CC, bp.ACT_NOTE, bp.ACT_START, bp.ACT_CONT, bp.ACT_STOP, bp.ACT_MMC, bp.ACT_NONE) == (0, 1, 2, 3, 4, 5, 6)
 IMG_CFG = fw[bp.CFG_ADDR - FL:][:bp.CFG_SIZE]
 assert IMG_CFG[O_BTNACT + PLAY] == ACT_START and IMG_CFG[O_BTNCC + VOLUME] == 44, 'the offsets above match the image under test'
 

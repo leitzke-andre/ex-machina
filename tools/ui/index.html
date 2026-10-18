@@ -78,6 +78,7 @@
   .blist .srow select, .blist .srow input { background: color-mix(in srgb, var(--accent) 6%, var(--panel)); }
   .blist input[type=number][aria-label$="semitones"] { width: 78px; }
   .blist select { width: 100%; }
+  .blist .hint select { width: auto; margin-left: 8px; font-size: 12.5px; }
   .blist .hint { color: var(--muted); font-size: 13px; font-family: var(--mono); }
   @media (max-width: 720px) { .blist { grid-template-columns: 1fr 1fr; } .blist .hint { grid-column: 1 / -1; } }
 
@@ -242,6 +243,8 @@
       <h2>Encoder targets</h2>
       <p class="muted">Buttons set to <em>Encoder target</em> point the encoder at one of these CCs instead (absolute values, shown on the screen); pressing the same button again goes back to the CC above.</p>
       <div class="row"><div class="field"><span>Target 1 CC</span><span id="f-enc_tgt0"></span></div><div class="field"><span>Target 2 CC</span><span id="f-enc_tgt1"></span></div><div class="field"><span>Target 3 CC</span><span id="f-enc_tgt2"></span></div></div>
+      <div class="row"><div class="field"><span>Pages</span><span id="f-enc_pages"></span></div><div class="field"><span>CC step per page</span><span id="f-enc_page_step"></span></div><div class="field"><span>Turning faster</span><select id="f-enc_accel"></select></div></div>
+      <p class="muted">With <em>Encoder page</em> buttons the three targets move to the next group of CCs: on page <em>p</em> (from 1) target <em>t</em> sends its CC + step × (<em>p</em> − 1), and every page remembers its own values. <span id="enc-pages-info"></span></p>
     </div>
     <div class="card">
       <h2>Touch strip</h2>
@@ -327,6 +330,7 @@
   <form method="dialog" id="dlg-form">
     <h3 id="dlg-title">Save as preset</h3>
     <label>Name<input type="text" id="dlg-name" maxlength="56" required autocomplete="off"></label>
+    <label>Name on the device's screen <span class="muted">(optional, up to 20 characters: capitals, digits and punctuation; shown when a slot is loaded)</span><input type="text" id="dlg-display" maxlength="20" autocomplete="off" spellcheck="false" style="text-transform:uppercase"></label>
     <label>Description <span class="muted">(optional)</span><textarea id="dlg-desc" maxlength="400" rows="3"></textarea></label>
     <menu><button type="submit" value="cancel" formnovalidate>Cancel</button><button type="submit" value="ok" class="primary" id="dlg-ok">Save</button></menu>
   </form>

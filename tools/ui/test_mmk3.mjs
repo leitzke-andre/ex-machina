@@ -26,6 +26,8 @@ const D = M.defaultCfg();
 check('request messages: INFO, GET, SAVE, RESET, RESET+erase, SET(defaults)', M.hex(M.infoRequest()) === V.requests.info && M.hex(M.getRequest()) === V.requests.get && M.hex(M.saveRequest()) === V.requests.save
   && M.hex(M.resetRequest()) === V.requests.reset && M.hex(M.resetRequest(true)) === V.requests.reset_erase && M.hex(M.setRequest(D)) === V.requests.set_default
   && M.hex(M.peekRequest(0x1FFFF7E0, 16)) === V.requests.peek && M.hex(M.peekRequest(0x0800CD20, 64)) === V.requests.peek_flash);
+check('a slot store with a name matches Python; display names: capitals and font characters, 20 at most, ? outside the font', M.hex(M.slotStoreRequest(1, 'BeatMaker 3 (draft)')) === V.requests.slot_store_named && ['BeatMaker 3 (draft)', 'a{b', 'x'.repeat(40), '  Spaced  '].every((n, i) => M.displayName(n) === V.requests.display_names[i]), JSON.stringify(V.requests.display_names));
+check('the name a preset has on the screen: its own display name, else made from its name', [{ name: 'BeatMaker 3 (draft)' }, { name: 'Maschine-like modes' }, { name: 'Mine', display: 'my drums' }, { name: 'x'.repeat(56) }].every((p, i) => M.presetDisplayName(p) === V.requests.preset_display_names[i]), JSON.stringify(V.requests.preset_display_names));
 check('slot request messages: store 3, load 4, list', M.hex(M.slotStoreRequest(2)) === V.requests.slot_store && M.hex(M.slotLoadRequest(3)) === V.requests.slot_load && M.hex(M.slotsRequest()) === V.requests.slots);
 const norm = (o) => JSON.parse(JSON.stringify(o, (k, v) => (v instanceof Uint8Array ? M.hex(v) : v)));
 check(`parseReply on ${V.replies.length} replies`, V.replies.every((r) => same(norm(M.parseReply(M.fromHex(r.hex))), r.parsed)), V.replies.map((r) => same(norm(M.parseReply(M.fromHex(r.hex))), r.parsed)));
@@ -64,7 +66,7 @@ if (process.argv.length >= 5) {
   const dev = new M.Mk3(transport, { timeout: 2000 });
 
   const info = await dev.info();
-  check('emulated device: INFO (protocol 2, 259 bytes, nothing saved)', same(info, { cmd: 16, protocol: 2, cfg_size: 259, saved: false, unsaved_changes: false, loaded_from_flash: false, version: 0 }), JSON.stringify(info));
+  check('emulated device: INFO (protocol 2, 274 bytes, nothing saved)', same(info, { cmd: 16, protocol: 2, cfg_size: 274, saved: false, unsaved_changes: false, loaded_from_flash: false, version: 0 }), JSON.stringify(info));
   check('GET returns the defaults', M.equal(await dev.get(), D));
   let cfg = M.fromDict({ channel: 4 }, D);
   const b = M.D.FIELDS.btn_cc[0], a = M.D.FIELDS.btn_act[0];
@@ -83,11 +85,12 @@ if (process.argv.length >= 5) {
   check('after a power cycle: saved, loaded from flash', after.saved && after.loaded_from_flash && !after.unsaved_changes, JSON.stringify(after));
   check('... and the saved config is active', M.equal(await dev.get(), cfg));
   const [i1, g1, i2] = await Promise.all([dev.info(), dev.get(), dev.info()]);
-  check('requests made at the same time are answered one by one, each with its own reply', i1.cmd === 16 && g1.length === 259 && i2.cmd === 16 && M.equal(g1, cfg));
+  check('requests made at the same time are answered one by one, each with its own reply', i1.cmd === 16 && g1.length === 274 && i2.cmd === 16 && M.equal(g1, cfg));
   // the preset slots against the firmware in the emulator
   check('slots: all empty on a new device', same(await dev.slots(), [false, false, false, false]));
   const rs = await dev.slotStore(1);
   check('slot 2 stores the active config: status 0, listed as used', rs.status === 0 && same(await dev.slots(), [false, true, false, false]), JSON.stringify(rs));
+  check('a store with a name: the JS client lists it (BEATMAKER 3) next to the unnamed slot', (await dev.slotStore(2, 'BeatMaker 3')).status === 0 && same(await dev.slotNames(), ['', '', 'BEATMAKER 3', '']), JSON.stringify(await dev.slotNames()));
   const other = M.fromDict({ channel: 9 }, D); await dev.set(other);
   check('loading slot 2 brings the stored config back', (await dev.slotLoad(1)).status === 0 && M.equal(await dev.get(), cfg));
   check('an empty slot answers "empty slot", a bad number "value out of range"', (await dev.slotLoad(3)).status_text === 'empty slot' && (await dev.slotStore(7)).status === 2);

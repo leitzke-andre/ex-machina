@@ -14,11 +14,11 @@ def render():
     v = {'defaults': {k: mc.default_cfg(**kw).hex() for k, kw in {
             'default': {}, 'transport_cc': {'transport': 'cc'}, 'transport_mmc': {'transport': 'mmc'}, 'pads_ni': {'pad_base': 12}, 'leds_off': {'local_leds': False}}.items()}}
     v['pack7'] = [{'data': b.hex(), 'packed': mc.pack7(b).hex()} for b in
-                  [bytes(rng.randrange(256) for _ in range(n)) for n in list(range(0, 24)) + [149, 152, 250, 252, 255, 256, 259, 260]] + [D]]
+                  [bytes(rng.randrange(256) for _ in range(n)) for n in list(range(0, 24)) + [149, 152, 250, 252, 255, 256, 259, 260, 273, 274, 275]] + [D]]
     v['crc'] = [{'data': b.hex(), 'crc': mc.crc16(b)} for b in (b'', b'123456789', D, bytes(range(256)))]
     v['requests'] = {'info': mc.info_request().hex(), 'get': mc.get_request().hex(), 'save': mc.save_request().hex(), 'reset': mc.reset_request().hex(),
                      'reset_erase': mc.reset_request(True).hex(), 'set_default': mc.set_request(D).hex(),
-                     'slot_store': mc.slot_store_request(2).hex(), 'slot_load': mc.slot_load_request(3).hex(), 'slots': mc.slots_request().hex(),
+                     'slot_store': mc.slot_store_request(2).hex(), 'slot_store_named': mc.slot_store_request(1, 'BeatMaker 3 (draft)').hex(), 'display_names': [mc.display_name(n) for n in ('BeatMaker 3 (draft)', 'a{b', 'x' * 40, '  Spaced  ')], 'preset_display_names': [mc.preset_display_name(p) for p in ({'name': 'BeatMaker 3 (draft)'}, {'name': 'Maschine-like modes'}, {'name': 'Mine', 'display_name': 'my drums'}, {'name': 'x' * 56})], 'slot_load': mc.slot_load_request(3).hex(), 'slots': mc.slots_request().hex(),
                      'peek': mc.peek_request(0x1FFFF7E0, 16).hex(), 'peek_flash': mc.peek_request(0x0800CD20, 64).hex()}
     replies = [bytes([0xF0, 0x7D, 0x4D, 0x4B, 0x50, 2, 122, 1, 5, 0xF7]), bytes([0x7D, 0x4D, 0x4B, 0x52, 2, 100, 1]), bytes([0x7D, 0x4D, 0x4B, 0x53, 3]),
                bytes([0xF0, 0x7D, 0x4D, 0x4B, 0x52, 0, 0xF7]), bytes([0xF0, 0x7D, 0x4D, 0x4B, 0x54, 0, 0xF7]), bytes([0xF0, 0x7D, 0x4D, 0x4B, 0x51]) + mc.pack7(D) + bytes([0xF7])]
@@ -49,7 +49,7 @@ def render():
     v['check'] = [{'cfg': c.hex(), 'offset': mc.check(c)} for c in cases]
     v['records'] = [{'cfg': c.hex(), 'record': mc.build_record(c).hex()} for c in (D, mc.default_cfg(transport='cc'), mut('channel', 0, 5))]
     page = mc.build_record(D); bad = bytearray(page); bad[20] ^= 1
-    v['parse_record'] = [{'page': page.hex(), 'cfg': D.hex()}, {'page': bytes(bad).hex(), 'cfg': None}, {'page': (b'\xff' * 272).hex(), 'cfg': None}]
+    v['parse_record'] = [{'page': page.hex(), 'cfg': D.hex()}, {'page': bytes(bad).hex(), 'cfg': None}, {'page': (b'\xff' * 288).hex(), 'cfg': None}]
     v['dict'] = {'cfg': mut('channel', 0, 3).hex(), 'dict': mc.to_dict(mut('channel', 0, 3))}
     custom = {'name': 'Custom A', 'description': 'for the tests', 'cfg': mut('channel', 0, 3)}
     v['preset_file'] = {'text': mc.preset_file(mc.builtin_presets() + [custom]), 'custom_cfg': custom['cfg'].hex(), 'builtin_ids': [p['id'] for p in mc.builtin_presets()]}

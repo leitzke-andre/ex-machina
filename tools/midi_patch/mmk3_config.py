@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Host side of the run-time configuration of the Mikro MK3 USB-MIDI patch (protocol: docs/remap-protocol.md).
 
-The config block layout (struct cfg in translate.c, 259 bytes), its defaults, the range check the firmware applies, the SysEx
+The config block layout (struct cfg in translate.c, 274 bytes), its defaults, the range check the firmware applies, the SysEx
 messages (INFO / GET / SET / SAVE / RESET), the saved flash record, and a small client on top of mido. Standard library only,
 except for the client, which needs `pip install mido python-rtmidi`. build_patch.py takes its defaults from here, the emulator
 tests talk to the firmware with these functions, and the planned browser UI repeats the same logic in JavaScript (checked against
@@ -13,14 +13,14 @@ the vectors this file produces).
     mmk3_config.py button Play start           change one button: cc N | note N | start | continue | stop | mmc N | none | padmode | keys | fixvel |
                                                vel16 | curve|scale|chordtype|arptype|rate|channel [next|prev] | chords | strip 0..3 | enctgt 0|1|2 | program 0|1|2 | snap 0|1 | tap | clockout | arp | arpoct | latch | mute | solo | clear | transpose SEMITONES | panic | shift;  add --shift to change what it does while Shift is held
     mmk3_config.py pad 1 40                    pad 1 sends note 40
-    mmk3_config.py slot list | store N | load N   the four preset slots in the device (N = 1..4): store the active config / make a slot active (not saved)
+    mmk3_config.py slot list | store N [name] | load N   the four preset slots in the device (N = 1..4): store the active config under a name (shown when the slot is loaded with the buttons) / make a slot active (not saved)
     mmk3_config.py save | reset [--erase]      keep the active config across power cycles | back to the defaults
     mmk3_config.py preset list [FILE]          the built-in presets (and those in a preset file)
     mmk3_config.py preset apply NAME [FILE] [--save]   send a preset (by id or name; from FILE if it is not built in), optionally keep it
 """
 import json, struct, sys, time
 
-CFG_SIZE = 259
+CFG_SIZE = 274
 PROTO_VERSION = 2
 FW_NAME, FW_VERSION = 'Ex-Machina', 0                  # the firmware's name and version (the idle screen shows EX-MACHINA / V0; INFO reports the version)
 
@@ -29,12 +29,12 @@ FW_NAME, FW_VERSION = 'Ex-Machina', 0                  # the firmware's name and
  ACT_PADMODE, ACT_KEYS, ACT_FIXVEL, ACT_VEL16, ACT_CURVE, ACT_TRANSPOSE, ACT_PANIC, ACT_SHIFT,
  ACT_SCALE, ACT_CHORDS, ACT_CHORDTYPE, ACT_STRIP, ACT_ENCTGT, ACT_PROGRAM,
  ACT_TAP, ACT_CLOCKOUT, ACT_ARP, ACT_ARPTYPE, ACT_RATE, ACT_ARPOCT, ACT_LATCH, ACT_MUTE, ACT_SOLO, ACT_CLEAR, ACT_SNAP,
- ACT_CHANNEL, ACT_SLOT, ACT_STEP, ACT_SEQRUN, ACT_SEQSEL, ACT_SEQPAT, ACT_SEQCLEAR, ACT_SEQSAVE) = range(40)
-ACT_LAST = ACT_SEQSAVE
+ ACT_CHANNEL, ACT_SLOT, ACT_STEP, ACT_SEQRUN, ACT_SEQSEL, ACT_SEQPAT, ACT_SEQCLEAR, ACT_SEQSAVE, ACT_PAGE, ACT_ENCPAGE) = range(42)
+ACT_LAST = ACT_ENCPAGE
 ACTION_NAMES = ('cc', 'note', 'start', 'continue', 'stop', 'mmc', 'none', 'padmode', 'keys', 'fixvel', 'vel16', 'curve', 'transpose', 'panic', 'shift',
                 'scale', 'chords', 'chordtype', 'strip', 'enctgt', 'program',
                 'tap', 'clockout', 'arp', 'arptype', 'rate', 'arpoct', 'latch', 'mute', 'solo', 'clear', 'snap',
-                'channel', 'slot', 'step', 'seqrun', 'seqsel', 'seqpat', 'seqclear', 'seqsave')
+                'channel', 'slot', 'step', 'seqrun', 'seqsel', 'seqpat', 'seqclear', 'seqsave', 'page', 'encpage')
 ARP_TYPES = ('repeat', 'up', 'down', 'up-down', 'played', 'random')                           # cfg.arp_type 0..5
 ARP_RATES = ('1/4', '1/8', '1/8T', '1/16', '1/16T', '1/32', '1/32T')                          # cfg.arp_rate 0..6
 SCALE_NAMES = ('chromatic', 'major', 'minor', 'harmonic minor', 'melodic minor', 'dorian', 'phrygian', 'lydian', 'mixolydian', 'locrian', 'major penta',
@@ -87,6 +87,7 @@ FIELDS = {
     'vel_curve': (149, 1), 'fixvel': (150, 1), 'keys_root': (151, 1), 'press_mode': (152, 1), 'press_cc': (153, 1),
     'btn_act2': (154, 48), 'btn_cc2': (202, 48), 'scale': (250, 1), 'chord_type': (251, 1), 'enc_tgt_cc': (252, 3),
     'arp_type': (255, 1), 'arp_rate': (256, 1), 'arp_oct': (257, 1), 'tempo': (258, 1),
+    'btn_mode_ovr': (259, 12), 'enc_pages': (271, 1), 'enc_page_step': (272, 1), 'enc_accel': (273, 1),
 }
 # the allowed values: (lowest, highest, 0xFF also allowed). The firmware's cfg_check() applies exactly these.
 RANGES = {
@@ -98,6 +99,7 @@ RANGES = {
     'vel_curve': (0, 8, False), 'fixvel': (1, 127, False), 'keys_root': (0, 127, False), 'press_mode': (0, 3, False), 'press_cc': (0, 127, False),
     'btn_act2': (0, ACT_LAST, False), 'btn_cc2': (0, 127, True), 'scale': (0, 23, False), 'chord_type': (0, 4, False), 'enc_tgt_cc': (0, 127, True),
     'arp_type': (0, 5, False), 'arp_rate': (0, 6, False), 'arp_oct': (1, 4, False), 'tempo': (0, 255, False),
+    'btn_mode_ovr': (0, 255, False), 'enc_pages': (1, 8, False), 'enc_page_step': (1, 32, False), 'enc_accel': (0, 3, False),
 }
 ENC_MODES = ('relative-offset', 'absolute', 'relative')        # cfg.enc_mode 0, 1, 2
 BTN_MODES = ('gate', 'toggle', 'trigger')                       # cfg.btn_mode 0, 1, 2
@@ -131,9 +133,21 @@ def default_cfg(sens=0xFF, boot_ms=0xFFFF, pad_base=36, enc_mode=1, enc_init=0, 
     c += bytes([ACT_NONE] * 48) + bytes([0xFF] * 48)  # the shifted layer: nothing, every button keeps its normal action
     c += bytes([0, 0, 7, 10, 11])                     # scale (chromatic), chord type (triad), the CCs of the three encoder targets (volume, pan, expression)
     c += bytes([0, 3, 1, 100])                        # arp: repeat, 1/16, one octave; start tempo 120 BPM (stored minus 20)
+    c += bytes(12) + bytes([1, 3, 0])                 # every button on the global CC mode; encoder pages: 1 page, 3 CCs per page, no acceleration
     assert len(c) == CFG_SIZE, len(c)                 # must match sizeof(struct cfg) in translate.c
     return bytes(c)
 
+
+def btn_mode_of(cfg, k):
+    """The mode of a CC button: 0 gate, 1 toggle, 2 trigger (its own setting, else the global one)."""
+    o = (cfg[FIELDS['btn_mode_ovr'][0] + (k >> 2)] >> ((k & 3) * 2)) & 3
+    return o - 1 if o else cfg[FIELDS['btn_mode'][0]]
+
+def set_btn_mode(cfg, k, mode):
+    """Gives button k its own CC mode (0 gate, 1 toggle, 2 trigger) or, with None, the global one again. Returns the new config."""
+    c = bytearray(cfg); i = FIELDS['btn_mode_ovr'][0] + (k >> 2); sh = (k & 3) * 2
+    c[i] = (c[i] & ~(3 << sh)) | (((0 if mode is None else mode + 1) & 3) << sh)
+    return bytes(c)
 
 def check(cfg):
     """The firmware's range check (cfg_check in translate.c): None if the block is usable, else the offset of the first bad byte, in the
@@ -149,7 +163,7 @@ def check(cfg):
     order += [(n, 0) for n in ('enc_mode', 'flags', 'sens', 'enc_init', 'btn_mode', 'led_flags', 'btn_led_idle', 'btn_led_on', 'pad_colour', 'strip_colour',
                                'vel_curve', 'fixvel', 'keys_root', 'press_mode', 'press_cc')]
     for i in range(48): order += [('btn_cc2', i), ('btn_act2', i)]
-    order += [('scale', 0), ('chord_type', 0)] + [('enc_tgt_cc', i) for i in range(3)] + [('arp_type', 0), ('arp_rate', 0), ('arp_oct', 0)]
+    order += [('scale', 0), ('chord_type', 0)] + [('enc_tgt_cc', i) for i in range(3)] + [('arp_type', 0), ('arp_rate', 0), ('arp_oct', 0), ('enc_pages', 0), ('enc_page_step', 0), ('enc_accel', 0)]
     for name, i in order:
         if bad(name, i): return FIELDS[name][0] + i
     return None
@@ -207,7 +221,19 @@ def get_request(): return message(CMD_GET)
 def set_request(cfg): return message(CMD_SET, pack7(bytes(cfg)))
 def save_request(): return message(CMD_SAVE)
 def reset_request(erase=False): return message(CMD_RESET, bytes([1]) if erase else b'')
-def slot_store_request(n): return message(CMD_SLOT_STORE, bytes([n]))
+NAME_MAX = 20                                       # characters of a preset's display name: what the screen's detail line shows whole (6 pixels each from x = 4)
+
+def display_name(text):
+    """A text as the device shows it: capitals and the characters of its 5x7 font (32-95), at most NAME_MAX of them."""
+    return ''.join(ch if 32 <= ord(ch) <= 95 else '?' for ch in str(text).upper()).strip()[:NAME_MAX]
+
+def preset_display_name(p):
+    """The name a preset has on the device's screen: its own `display_name`, else one made from the name ("(draft)" dropped)."""
+    own = display_name(p.get('display_name', ''))
+    return own or display_name(str(p['name']).replace(' (draft)', '').replace('-like modes', ' modes'))
+
+slot_name = display_name                            # (the name kept with a preset slot)
+def slot_store_request(n, name=None): return message(CMD_SLOT_STORE, bytes([n]) + (display_name(name).encode('ascii') if name else b''))
 def slot_load_request(n): return message(CMD_SLOT_LOAD, bytes([n]))
 def slots_request(): return message(CMD_SLOTS)
 def peek_request(addr, length):
@@ -231,7 +257,9 @@ def parse_reply(msg):
         addr = 0
         for b in data[1:6]: addr = (addr << 7) | b
         return {'cmd': cmd, 'status': data[0], 'addr': addr, 'data': unpack7(data[6:])[:] if data[0] == 0 else b''}
-    if cmd == CMD_SLOTS: return {'cmd': cmd, 'status': data[0], 'used': [bool(data[1] >> i & 1) for i in range(4)]}
+    if cmd == CMD_SLOTS:       # after the mask: NAME_MAX characters per slot (0 = padding); an older firmware sends none
+        names = [bytes(data[2 + NAME_MAX * i:2 + NAME_MAX * (i + 1)]).rstrip(b'\0').decode('ascii', 'replace') for i in range(4)]
+        return {'cmd': cmd, 'status': data[0], 'used': [bool(data[1] >> i & 1) for i in range(4)], 'names': names}
     if cmd in (CMD_SET, CMD_SAVE, CMD_RESET, CMD_SLOT_STORE, CMD_SLOT_LOAD):
         r = {'cmd': cmd, 'status': data[0], 'status_text': STATUS.get(data[0], '?')}
         if cmd == CMD_SET and data[0] == 2: r['offset'] = data[1] | (data[2] << 7)
@@ -242,7 +270,7 @@ def parse_reply(msg):
 # ---- the saved record in flash (struct rec in translate.c) ----
 REC_MAGIC = 0x46434B4D                               # b'MKCF'
 REC_VERSION = 1
-REC_SIZE = 272
+REC_SIZE = 288
 
 def crc16(data, crc=0xFFFF):                         # CRC-16/CCITT-FALSE
     for b in data:
@@ -252,11 +280,11 @@ def crc16(data, crc=0xFFFF):                         # CRC-16/CCITT-FALSE
 
 def build_record(cfg):
     cfg = bytes(cfg)
-    data = cfg + bytes(260 - len(cfg))
+    data = cfg + bytes(276 - len(cfg))
     return struct.pack('<IHHHH', REC_MAGIC, REC_VERSION, len(cfg), crc16(cfg), 0xFFFF) + data
 
 def parse_record(page, defaults=None):
-    """The config the device would load from the saved page (page = the first 272 bytes at SAVE_PAGE), or None if there is no valid one."""
+    """The config the device would load from the saved page (page = the first 288 bytes at SAVE_PAGE), or None if there is no valid one."""
     page = bytes(page)
     magic, ver, ln, crc, _ = struct.unpack_from('<IHHHH', page, 0)
     if magic != REC_MAGIC or ver != REC_VERSION or not 4 <= ln <= CFG_SIZE or crc16(page[12:12 + ln]) != crc: return None
@@ -330,13 +358,34 @@ def _maschine_modes():
     act('Erase', ACT_SEQCLEAR, 0); act('Erase', ACT_SEQCLEAR, 1, shifted=True)                                              #   clear the track, Shift: the pattern
     act('Restart', ACT_SEQRUN, 1); act('Restart', ACT_SEQSAVE, 0xFF, shifted=True)                                          #   restart, Shift: keep the patterns in flash
     act('Group', ACT_CHANNEL, 0); act('Group', ACT_CHANNEL, 1, shifted=True)                                                # MIDI channel next / previous (kept when unplugged)
-    for k, name in enumerate(('Scene', 'Pattern', 'Events', 'Variation')): act(name, ACT_SLOT, k); act(name, ACT_SLOT, 4 + k, shifted=True)   # the four preset slots: load, Shift: store
+    for k, name in enumerate(('Scene', 'Pattern', 'Events', 'Variation')): act(name, ACT_SLOT, k)   # the four preset slots: load (Shift + the button loads it too; storing is for the tool: a button that stores overwrote slots by accident)
+    return bytes(c)
+
+def _with_slots(cfg):
+    """Adds the way back to the device's preset slots to an app preset: Shift (hold) + Scene / Pattern / Events / Variation loads slot 1-4. Only the Shift
+    layer and the Shift button are touched; every other button keeps what the preset gave it."""
+    c = bytearray(cfg)
+    c[FIELDS['btn_act'][0] + BUTTON_NAMES.index('Shift')] = ACT_SHIFT; c[FIELDS['btn_cc'][0] + BUTTON_NAMES.index('Shift')] = 0xFF
+    for k, name in enumerate(('Scene', 'Pattern', 'Events', 'Variation')):
+        c[FIELDS['btn_act2'][0] + BUTTON_NAMES.index(name)] = ACT_SLOT; c[FIELDS['btn_cc2'][0] + BUTTON_NAMES.index(name)] = k
+    return bytes(c)
+
+def _beatmaker3():
+    """BeatMaker 3 learns everything (Focus Actions: trigger pad 1-64, modes, macros 1-16, transport, bank / page / octave steps), so the numbers are free; what helps is
+    that every control sends a distinct message once per press. Pads 1-16 = notes 0-15 (BeatMaker's Single Channel mode counts from note 0), Left / Right = the next / previous page of
+    16 pads (pads 17-64 are pages 2-4), Plug-in / Sampling = the next / previous page of encoder targets: Volume / Swing / Tempo pick the target, 6 pages of 3 CCs (20-37) cover the
+    16 macros, and a faster turn takes bigger steps."""
+    c = bytearray(_app_preset({**_cc(Play=102, Stop=103, Rec=104, Tap=105, Restart=106, Mute=107, Solo=108, Select=109, Scene=110, Keyboard=111, Group=112, Pattern=113),
+                               'Left': (ACT_PAGE, 1), 'Right': (ACT_PAGE, 0), 'Plug-in': (ACT_ENCPAGE, 0), 'Sampling': (ACT_ENCPAGE, 1),
+                               'Volume': (ACT_ENCTGT, 0), 'Swing': (ACT_ENCTGT, 1), 'Tempo': (ACT_ENCTGT, 2)}, pad_base=0, btn_mode=2))
+    c[FIELDS['enc_tgt_cc'][0]:FIELDS['enc_tgt_cc'][0] + 3] = bytes([20, 21, 22])
+    c[FIELDS['enc_pages'][0]], c[FIELDS['enc_page_step'][0]], c[FIELDS['enc_accel'][0]] = 6, 3, 1
     return bytes(c)
 
 def builtin_presets():
     """The presets that come with the tool, as dicts with id, name, description and cfg (bytes). The browser page shows the same list
-    (tools/ui/gen_data.py writes it into mmk3_data.js)."""
-    return [
+    (tools/ui/gen_data.py writes it into mmk3_data.js). Each has a `display_name`: what the device's screen shows when its slot is loaded."""
+    presets = [
         {'id': 'default', 'name': 'Default',
          'description': "What the firmware starts with: Play and Stop send MIDI Start and Stop, every other button sends NI's Control Change numbers, "
                         "pads 1-16 play notes 36-51 (General MIDI drums), encoder CC 7, touch strip CC 1, MIDI channel 1, local lighting on.",
@@ -350,12 +399,17 @@ def builtin_presets():
         {'id': 'groove-rider-2', 'name': 'Groove Rider 2',
          'description': "Tried on an iPad: pads (Trigger, Keys), strip (cutoff), encoder (Last Knob Control), Solo / Mute (send A / B throws). Pads 1-16 = notes 36-51, strip = CC 74, "
                         "encoder = relative CC 20 (its touch sensor sends nothing, or the app learns that instead of the turn; push = CC 8), Solo / Mute = CC 91 / 92, Erase = CC 120. "
-                        "In the app: Midi In Device = the Mikro, Single channel 1. The transport cannot be mapped there.",
-         'cfg': _groove_rider_2()},
+                        "In the app: Midi In Device = the Mikro, Single channel 1. The transport cannot be mapped there. Shift (hold) + Scene / Pattern / Events / Variation loads the device's preset slot 1-4.",
+         'cfg': _with_slots(_groove_rider_2())},
         {'id': 'korg-gadget-3', 'name': 'Korg Gadget 3 (draft)',
          'description': "Draft, from Korg's manual and forum posts, not tried. Pads 36-51 into the track whose MIDI button is lit; Play / Stop / Rec / Restart / Tap = CC 3 / 119 / 2 / 118 / 117 "
-                        "(press only) for Gadget's Transport CC settings, which you enter there; encoder CC 7 (level), strip CC 1. Encoder push and touch send nothing. Keep channel 16 free.",
-         'cfg': _app_preset({**_cc(Play=3, Stop=119, Rec=2, Restart=118, Tap=117)}, btn_mode=2)},
+                        "(press only) for Gadget's Transport CC settings, which you enter there; encoder CC 7 (level), strip CC 1. Encoder push and touch send nothing. Keep channel 16 free. Shift (hold) + Scene / Pattern / Events / Variation loads the device's preset slot 1-4.",
+         'cfg': _with_slots(_app_preset({**_cc(Play=3, Stop=119, Rec=2, Restart=118, Tap=117)}, btn_mode=2))},
+        {'id': 'beatmaker-3', 'name': 'BeatMaker 3 (draft)',
+         'description': "Draft, from the BeatMaker 3 manual, not tried. BeatMaker maps everything by MIDI learn, so learn each control once: Auto Learn the pads (notes 0-15; Left / Right turn the page, "
+                        "so pads 17-64 are pages 2-4), transport Play / Stop / Rec / Tap (CC 102-105), mode buttons Mute / Solo / Select / Scene / Keyboard (CC 107-111), bank steps on Group / Pattern. "
+                        "Macros 1-16: press Volume / Swing / Tempo to choose which of three CCs the encoder turns (20-22), Plug-in / Sampling change the page (6 pages: CC 20-37); a fast turn takes bigger steps. Shift (hold) + Scene / Pattern / Events / Variation loads the device's preset slot 1-4.",
+         'cfg': _with_slots(_beatmaker3())},
         {'id': 'cubasis-3', 'name': 'Cubasis 3 (draft)',
          'description': "Draft, from Steinberg's help and forum posts, not tried. Pads 36-51 (GM kits). Buttons send CC 102-114 once per press (Play, Stop, Rec, Restart, Left, Right, Mute, Solo, Select, Follow, Tap, "
                         "Browser, Favorites): learn each one in Cubasis (Selected Track Mode on); do not declare the port Mackie/HUI. Encoder CC 20 (volume, Catch-Up), strip CC 21 (pan).",
@@ -371,10 +425,12 @@ def builtin_presets():
                         "Note Repeat = sustain CC 64 while held, Play / Stop / Rec = MMC (a forum claim; transport is otherwise only by keyboard). Turn MPE off. Everything else sends nothing.",
          'cfg': _app_preset({**{n: (ACT_MMC, v) for n, v in (('Play', 2), ('Stop', 1), ('Rec', 6))}, **_cc(Note_Repeat=64)}, btn_mode=0)},
     ]
+    for p in presets: p['display_name'] = preset_display_name(p)
+    return presets
 
 def preset_file(presets):
     """The JSON text of a preset file (what the browser page exports and imports)."""
-    return json.dumps({'format': PRESET_FILE_FORMAT, 'presets': [{'name': p['name'], 'description': p.get('description', ''), 'cfg': bytes(p['cfg']).hex()} for p in presets]}, indent=1)
+    return json.dumps({'format': PRESET_FILE_FORMAT, 'presets': [{'name': p['name'], 'description': p.get('description', ''), 'display_name': preset_display_name(p), 'cfg': bytes(p['cfg']).hex()} for p in presets]}, indent=1)
 
 def read_preset_file(text):
     """The presets in a preset file (list of dicts with name, description, cfg bytes). A config shorter than the current layout (an older
@@ -388,7 +444,7 @@ def read_preset_file(text):
         cfg = bytearray(default_cfg()); cfg[:len(raw)] = raw
         bad = check(bytes(cfg))
         if bad is not None: raise ValueError(f"preset {p.get('name')!r}: byte {bad} is out of range")
-        out.append({'name': str(p['name']), 'description': str(p.get('description', '')), 'cfg': bytes(cfg)})
+        out.append({'name': str(p['name']), 'description': str(p.get('description', '')), 'cfg': bytes(cfg), **({'display_name': display_name(p['display_name'])} if p.get('display_name') else {})})
     return out
 
 def find_preset(name, files=()):
@@ -430,7 +486,8 @@ class Device:
     def save(self): return self.request(save_request(), CMD_SAVE)
     def reset(self, erase=False): return self.request(reset_request(erase), CMD_RESET)
     def slots(self): return self.request(slots_request(), CMD_SLOTS)['used']
-    def slot_store(self, n): return self.request(slot_store_request(n), CMD_SLOT_STORE)
+    def slot_names(self): return self.request(slots_request(), CMD_SLOTS)['names']
+    def slot_store(self, n, name=None): return self.request(slot_store_request(n, name), CMD_SLOT_STORE)
     def slot_load(self, n): return self.request(slot_load_request(n), CMD_SLOT_LOAD)
 
     def peek(self, addr, length):
@@ -469,7 +526,7 @@ def main(argv=None):
         cfg[FIELDS['btn_act2' if shifted else 'btn_act'][0] + idx] = ACTION_NAMES.index(action)
         par = cfg_par = None
         if action in ('cc', 'note', 'mmc'): par = int(rest[2])
-        elif action in ('curve', 'scale', 'chordtype', 'arptype', 'rate', 'channel'): par = 1 if len(rest) > 2 and rest[2].lower().startswith('prev') else 0
+        elif action in ('curve', 'scale', 'chordtype', 'arptype', 'rate', 'channel', 'page', 'encpage'): par = 1 if len(rest) > 2 and rest[2].lower().startswith('prev') else 2 if len(rest) > 2 and rest[2].lower() in ('first', 'reset') and action in ('page', 'encpage') else 0
         elif action in ('strip', 'enctgt', 'program', 'snap'): par = int(rest[2]) if len(rest) > 2 else 0
         elif action == 'transpose': par = 64 + int(rest[2])
         elif shifted and action == 'none': par = 0xFF
@@ -489,9 +546,10 @@ def main(argv=None):
             if '--save' in rest: show(dev.save())
         else: raise SystemExit('preset list | preset apply NAME [FILE] [--save]')
     elif cmd == 'slot':
-        if rest[0] == 'list': print(json.dumps({'slots_used': dev.slots()}))
-        elif rest[0] in ('store', 'load') and len(rest) > 1 and rest[1] in '1234': show((dev.slot_store if rest[0] == 'store' else dev.slot_load)(int(rest[1]) - 1))
-        else: raise SystemExit('slot list | slot store 1..4 | slot load 1..4')
+        if rest[0] == 'list': r = dev.request(slots_request(), CMD_SLOTS); print(json.dumps({'slots_used': r['used'], 'names': r['names']}))
+        elif rest[0] == 'store' and len(rest) > 1 and rest[1] in '1234': show(dev.slot_store(int(rest[1]) - 1, ' '.join(rest[2:]) or None))
+        elif rest[0] == 'load' and len(rest) > 1 and rest[1] in '1234': show(dev.slot_load(int(rest[1]) - 1))
+        else: raise SystemExit('slot list | slot store 1..4 [name] | slot load 1..4')
     elif cmd == 'save': show(dev.save())
     elif cmd == 'reset': show(dev.reset('--erase' in rest))
     else: raise SystemExit(f'unknown command {cmd!r}')

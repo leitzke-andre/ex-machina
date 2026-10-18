@@ -22,6 +22,10 @@ F = mc.FIELDS
 B = {n: i for i, n in enumerate(mc.BUTTON_NAMES)}
 PADIDX = {n: mc.PAD_LABEL.index(n) for n in range(1, 17)}
 PRESET = next(p['cfg'] for p in mc.builtin_presets() if p['id'] == 'maschine-modes')
+REAL_PRESET = PRESET
+PRESET = bytearray(PRESET)                                              # the tests of storing from the buttons: the preset plus Shift + Scene / Pattern / Events / Variation = store in slot 1-4
+for _k, _n in enumerate(('Scene', 'Pattern', 'Events', 'Variation')): PRESET[F['btn_act2'][0] + B[_n]] = mc.ACT_SLOT; PRESET[F['btn_cc2'][0] + B[_n]] = 4 + _k
+PRESET = bytes(PRESET)
 NON = lambda n, v=93, ch=0: (0x09, 0x90 | ch, n, v)
 NOFF = lambda n, ch=0: (0x08, 0x80 | ch, n, 0)
 DEFAULTS = mc.default_cfg()
@@ -147,6 +151,39 @@ x.tap('Scene'); x.run(40)
 check('Scene makes slot 1 the active config again (channel 8)', x.cfg()[F['channel'][0]], 7)
 x.tap('Pattern'); x.run(40)
 check('an empty slot on a button changes nothing', x.cfg()[F['channel'][0]], 7)
+# ---- slot names: kept with the slot, listed, shown when a button loads the slot -------------------------------------------------------------------------
+x = T(DEFAULTS)
+check('slot names: none on slots stored without one', x.ask(mc.slots_request())['names'], [''] * 4)
+x.d.send_sysex(mc.set_request(A)); [x.d.tick(0) for _ in range(5)]
+r = x.ask(mc.slot_store_request(1, 'Beatmaker 3'))
+check('storing with a name ("Beatmaker 3" -> BEATMAKER 3): status 0, listed, the other slots without', (r['status'], x.ask(mc.slots_request())['names']), (0, ['', 'BEATMAKER 3', '', '']))
+check('the name is the same after a power cycle', x.reboot().ask(mc.slots_request())['names'][1], 'BEATMAKER 3')
+check('a name of 20 characters is kept whole, a longer one cut, a character outside the font becomes ?', (mc.display_name('A' * 20), mc.display_name('a{b'), len(mc.display_name('x' * 40))), ('A' * 20, 'A?B', 20))
+check('a preset without a display name gets one made from its name; its own wins', (mc.preset_display_name({'name': 'Korg Gadget 3 (draft)'}), mc.preset_display_name({'name': 'x', 'display_name': 'my drums'})), ('KORG GADGET 3', 'MY DRUMS'))
+x.ask(mc.slot_store_request(2, 'ABCDEFGHIJKLMNOPQRST')); check('20 characters fit', x.ask(mc.slots_request())['names'][2], 'ABCDEFGHIJKLMNOPQRST')
+check('a name of 21 characters in the request is refused (wrong length), nothing written', (mc.parse_reply(x.d.ask(mc.message(0x15, bytes([3]) + b'A' * 21))[0])['status'], x.ask(mc.slots_request())['used'][3]), (1, False))
+x.ask(mc.slot_store_request(1, 'Renamed')); check('storing again under another name replaces it (one erase)', x.ask(mc.slots_request())['names'][1], 'RENAMED')
+x.ask(mc.slot_store_request(1)); check('storing without a name leaves the slot unnamed', x.ask(mc.slots_request())['names'][1], '')
+x.ask(mc.slot_store_request(1, 'Renamed'))
+x.d.send_sysex(mc.set_request(PRESET)); [x.d.tick(0) for _ in range(5)]
+sc = Screen(x.d); sc.settle(); x.tap('Pattern'); sc.run(6, 10)
+check('a button that loads a slot shows its name on the screen (SLOT 2 / RENAMED)', sc.fb() == reference('SLOT 2', 'RENAMED'), True)
+x.d.send_sysex(mc.set_request(PRESET)); [x.d.tick(0) for _ in range(5)]
+x.shift_tap('Variation'); x.run(40)
+check('a new config has no name: Shift + Variation stores it into slot 4 without one', x.ask(mc.slots_request())['names'][3], '')
+x.tap('Pattern'); x.run(40); x.shift_tap('Events'); x.run(40)
+check('after loading a named slot, Shift + a slot button stores under that name', x.ask(mc.slots_request())['names'][2], 'RENAMED')
+x.tap('Variation'); sc.run(6, 10)
+check('an unnamed slot shows LOADED', sc.fb() == reference('SLOT 4', 'LOADED'), True)
+# the preset as shipped: no button stores (a Shift + slot button that stored overwrote slots by accident); Shift + the button loads, like the plain press
+x = T(DEFAULTS); x.d.send_sysex(mc.set_request(A)); [x.d.tick(0) for _ in range(5)]; x.ask(mc.slot_store_request(1, 'Mine'))
+x.d.send_sysex(mc.set_request(REAL_PRESET)); [x.d.tick(0) for _ in range(5)]
+n0 = len(x.d.flash.log); x.shift_tap('Pattern'); x.run(40)
+check('Maschine-like modes: Shift + Pattern loads slot 2 (and writes nothing to flash)', (x.cfg() == A, len(x.d.flash.log) - n0), (True, 0))
+x.d.send_sysex(mc.set_request(REAL_PRESET)); [x.d.tick(0) for _ in range(5)]
+x.tap('Pattern'); x.run(40)
+check('... and so does the plain press; slot 2 is still the stored config and nothing was written', (x.cfg() == A, x.ask(mc.slots_request())['names'][1], len(x.d.flash.log) - n0), (True, 'MINE', 0))
+check('no button of the shipped preset stores into a slot', [k for k in range(41) if REAL_PRESET[F['btn_act2'][0] + k] == mc.ACT_SLOT or (REAL_PRESET[F['btn_act'][0] + k] == mc.ACT_SLOT and REAL_PRESET[F['btn_cc'][0] + k] > 3)], [])
 # ---- the step sequencer --------------------------------------------------------------------------------------------------------------------------
 from dispsim import seq_grid
 PADLED = lambda x, n: x.led()[39 + PADIDX[n]]

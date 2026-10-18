@@ -18,12 +18,12 @@ def check(name, got, want=True, detail=''):
 rng = random.Random(7)
 rt = all(mc.unpack7(mc.pack7(b)) == b for b in (bytes(rng.randrange(256) for _ in range(n)) for n in list(range(0, 40)) + [149, 152, 250, 252, 255]))
 check('pack7 / unpack7 round-trip for lengths 0..39, 149, 152, 250, 252, 255 with all byte values', rt)
-check('pack7: 7 data bytes behind one byte of their high bits; the config packs to 296 bytes, every byte below 0x80',
+check('pack7: 7 data bytes behind one byte of their high bits; the config packs to 314 bytes, every byte below 0x80',
       (mc.pack7(bytes([0x80, 0, 0x81, 0, 0, 0, 0xFF])), len(mc.pack7(mc.default_cfg())), max(mc.pack7(bytes(range(256))))),
-      (bytes([0b1000101, 0, 0, 1, 0, 0, 0, 0x7F]), 296, 0x7F))
+      (bytes([0b1000101, 0, 0, 1, 0, 0, 0, 0x7F]), 314, 0x7F))
 check('crc16 is CRC-16/CCITT-FALSE (check value 0x29B1 for "123456789")', mc.crc16(b'123456789'), 0x29B1)
 D = mc.default_cfg()
-check('default_cfg is 259 bytes and valid', (len(D), mc.check(D)), (259, None))
+check('default_cfg is 274 bytes and valid', (len(D), mc.check(D)), (274, None))
 variants = [mc.default_cfg(transport=t, local_leds=l, pad_base=b, enc_mode=e, btn_mode=m, vel_shift=v, pad_colour=c, sens=s)
             for t in ('realtime', 'cc', 'mmc') for l in (False, True) for b in (12, 36) for e in (0, 1, 2) for m in (0, 1, 2)
             for v in (1, 5, 8) for c in (0, 5, 17) for s in (0xFF, 80)]
@@ -36,9 +36,9 @@ try: mc.from_dict({'pad_note': [1, 2]}); raised = False
 except ValueError: raised = True
 check('from_dict refuses an array of the wrong length', raised)
 rec = mc.build_record(D)
-check('record: 272 bytes, magic "MKCF", version 1, length 259', (len(rec), rec[:4], struct.unpack_from('<HH', rec, 4)), (272, b'MKCF', (1, 259)))
+check('record: 288 bytes, magic "MKCF", version 1, length 274', (len(rec), rec[:4], struct.unpack_from('<HH', rec, 4)), (288, b'MKCF', (1, 274)))
 check('parse_record(build_record(c)) == c, and a flipped bit anywhere in the data is refused', (mc.parse_record(rec), mc.parse_record(rec[:20] + bytes([rec[20] ^ 4]) + rec[21:])), (D, None))
-check('parse_record refuses a blank page', mc.parse_record(b'\xff' * 272), None)
+check('parse_record refuses a blank page', mc.parse_record(b'\xff' * 288), None)
 check('parse_reply: INFO, SET refused with offset, SAVE ok',
       (mc.parse_reply(bytes([0xF0, 0x7D, 0x4D, 0x4B, 0x50, 2, 122, 1, 5, 0xF7])), mc.parse_reply(bytes([0x7D, 0x4D, 0x4B, 0x52, 2, 100, 1])), mc.parse_reply(bytes([0x7D, 0x4D, 0x4B, 0x53, 3]))),
       ({'cmd': 16, 'protocol': 2, 'cfg_size': 250, 'saved': True, 'unsaved_changes': False, 'loaded_from_flash': True, 'version': None},
@@ -58,7 +58,7 @@ check('every built-in preset is valid, has a unique id and name, and survives a 
 check('preset_file / read_preset_file round trip (name, description, bytes)', [(p['name'], p['description'], p['cfg']) for p in back] == [('Custom A', 'for the tests', custom['cfg'])])
 j = json.loads(text); j['presets'][0]['cfg'] = j['presets'][0]['cfg'][:200]
 old = mc.read_preset_file(json.dumps(j))[0]['cfg']
-check('a shorter config (an older tool) is laid over the defaults', old[:100] == custom['cfg'][:100] and old[100:] == D[100:] and len(old) == 259)
+check('a shorter config (an older tool) is laid over the defaults', old[:100] == custom['cfg'][:100] and old[100:] == D[100:] and len(old) == 274)
 bad_cases = {'a wrong format': {'format': 'x', 'presets': []}, 'a value out of range': {'format': mc.PRESET_FILE_FORMAT, 'presets': [{'name': 'x', 'cfg': (D[:4] + bytes([40]) + D[5:]).hex()}]},
              'a config that is too long': {'format': mc.PRESET_FILE_FORMAT, 'presets': [{'name': 'x', 'cfg': D.hex() + '00'}]}}
 for what, doc in bad_cases.items():
@@ -92,7 +92,7 @@ def cli(*argv):
     return rc, buf.getvalue().strip()
 
 rc, out = cli('info')
-check('mmk3_config info: protocol 2, 259 bytes, nothing saved', (rc, json.loads(out)['protocol'], json.loads(out)['cfg_size'], json.loads(out)['saved']), (0, 2, 259, False))
+check('mmk3_config info: protocol 2, 274 bytes, nothing saved', (rc, json.loads(out)['protocol'], json.loads(out)['cfg_size'], json.loads(out)['saved']), (0, 2, 274, False))
 rc, out = cli('get')
 check('mmk3_config get prints the active config as JSON, equal to the defaults', mc.from_dict(json.loads(out)), D)
 rc, out = cli('button', 'Play', 'cc', '57')

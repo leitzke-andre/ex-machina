@@ -45,6 +45,8 @@ export function describeButton(cfg, id, layer = 0) {
   if (a === 'seqpat') return p === 1 ? 'previous pattern' : 'next pattern';
   if (a === 'seqclear') return p === 1 ? 'clear pattern' : 'clear track';
   if (a === 'seqsave') return 'keep the patterns';
+  if (a === 'page') return ['next pad page', 'previous pad page', 'pad page 1'][p] ?? 'next pad page';
+  if (a === 'encpage') return ['next encoder page', 'previous encoder page', 'encoder page 1'][p] ?? 'next encoder page';
   if (a === 'tap') return 'tap tempo';
   if (a === 'clockout') return 'MIDI clock out on / off';
   if (a === 'arp') return 'arp / Note Repeat on / off';
@@ -70,7 +72,7 @@ const buttonKind = (cfg, id) => {
   const a = D.ACTION_NAMES[byte(cfg, 'btn_act', id)], p = byte(cfg, 'btn_cc', id);
   if (a === 'cc') return p === 0xff ? 'unassigned' : 'cc';
   if (a === 'note') return p > 127 ? 'unassigned' : 'note';
-  if (['padmode', 'keys', 'fixvel', 'vel16', 'curve', 'transpose', 'panic', 'shift', 'scale', 'chords', 'chordtype', 'strip', 'enctgt', 'program', 'tap', 'clockout', 'arp', 'arptype', 'rate', 'arpoct', 'latch', 'mute', 'solo', 'clear', 'snap', 'channel', 'slot', 'step', 'seqrun', 'seqsel', 'seqpat', 'seqclear', 'seqsave'].includes(a)) return 'function';
+  if (['padmode', 'keys', 'fixvel', 'vel16', 'curve', 'transpose', 'panic', 'shift', 'scale', 'chords', 'chordtype', 'strip', 'enctgt', 'program', 'tap', 'clockout', 'arp', 'arptype', 'rate', 'arpoct', 'latch', 'mute', 'solo', 'clear', 'snap', 'channel', 'slot', 'step', 'seqrun', 'seqsel', 'seqpat', 'seqclear', 'seqsave', 'page', 'encpage'].includes(a)) return 'function';
   return a === 'none' ? 'unassigned' : 'transport';
 };
 /** True if the button does something while Shift is held (its second action is set). */
@@ -123,6 +125,7 @@ const SCALARS = [
   ['press_mode', 'Pad pressure', (v) => D.PRESS_MODES[v] ?? v], ['press_cc', 'Pad pressure CC', (v) => v],
   ['scale', 'Scale', (v) => D.SCALE_NAMES[v] ?? v], ['chord_type', 'Chord type', (v) => D.CHORD_NAMES[v] ?? v],
   ['arp_type', 'Arp pattern', (v) => D.ARP_TYPES[v] ?? v], ['arp_rate', 'Arp rate', (v) => D.ARP_RATES[v] ?? v], ['arp_oct', 'Arp octaves', (v) => v], ['tempo', 'Start tempo (BPM)', (v) => v + 20],
+  ['enc_pages', 'Encoder pages', (v) => v], ['enc_page_step', 'Encoder CC step per page', (v) => v], ['enc_accel', 'Encoder acceleration', (v) => ['off', 'gentle', 'medium', 'strong'][v] ?? v],
 ];
 const LED_BITS = [[D.LED_FLAGS.BTN_IDLE, 'buttons rest dimly lit'], [D.LED_FLAGS.BTN_PRESS, 'buttons light when pressed'], [D.LED_FLAGS.PAD_IDLE, 'pads rest in their colour'],
                   [D.LED_FLAGS.PAD_HIT, 'pads flash when hit'], [D.LED_FLAGS.STRIP, 'strip LED follows the finger']];
@@ -140,6 +143,8 @@ export function diffCfg(a, b) {
       if (x !== y) out.push(`${D.BUTTON_NAMES[id]} with Shift: ${x} → ${y}`);
     }
   }
+  const modeOf = (c, id) => { const o = (byte(c, 'btn_mode_ovr', id >> 2) >> ((id & 3) * 2)) & 3; return D.BTN_MODES[o ? o - 1 : byte(c, 'btn_mode')]; };
+  for (let id = 0; id < 41; id++) { const x = modeOf(a, id), y = modeOf(b, id); if (x !== y && (D.ACTION_NAMES[byte(b, 'btn_act', id)] === 'cc' || D.ACTION_NAMES[byte(a, 'btn_act', id)] === 'cc')) out.push(`${D.BUTTON_NAMES[id]}: CC mode ${x} → ${y}`); }
   const pa = padNotes(a), pb = padNotes(b), changed = pa.map((v, i) => i).filter((i) => pa[i] !== pb[i]);
   if (changed.length) {
     if (consecutive(pa) && consecutive(pb)) out.push(`Pad notes: ${pa[0]}–${pa[15]} → ${pb[0]}–${pb[15]}`);
@@ -165,7 +170,7 @@ export class PresetStore {
   /** storage: anything with getItem / setItem (localStorage), or null to keep the presets in memory only. */
   constructor({ storage = null, builtins = D.BUILTIN_PRESETS, now = Date.now, newId = defaultId } = {}) {
     this.storage = storage; this.now = now; this.newId = newId; this.persistent = !!storage;
-    this.builtins = builtins.map((b) => ({ id: b.id, name: b.name, description: b.description, cfg: cfgFromHex(b.cfg_hex), builtin: true }));
+    this.builtins = builtins.map((b) => ({ id: b.id, name: b.name, display: M.displayName(b.display_name || ''), description: b.description, cfg: cfgFromHex(b.cfg_hex), builtin: true }));
     this.user = [];
     try {
       const raw = storage?.getItem(STORAGE_KEY);
@@ -176,11 +181,11 @@ export class PresetStore {
   fromStored(o) {
     const cfg = cfgFromHex(o?.cfg);
     if (!cfg || typeof o.name !== 'string' || !o.name.trim()) return null;
-    return { id: typeof o.id === 'string' ? o.id : this.newId(), name: o.name.trim().slice(0, 60), description: String(o.description || '').slice(0, 400), cfg, builtin: false, created: o.created || this.now(), modified: o.modified || this.now() };
+    return { id: typeof o.id === 'string' ? o.id : this.newId(), name: o.name.trim().slice(0, 60), display: M.displayName(o.display || ''), description: String(o.description || '').slice(0, 400), cfg, builtin: false, created: o.created || this.now(), modified: o.modified || this.now() };
   }
 
   persist() {
-    try { this.storage?.setItem(STORAGE_KEY, JSON.stringify({ format: D.PRESET_FILE_FORMAT, presets: this.user.map((p) => ({ id: p.id, name: p.name, description: p.description, cfg: M.hex(p.cfg), created: p.created, modified: p.modified })) })); return true; }
+    try { this.storage?.setItem(STORAGE_KEY, JSON.stringify({ format: D.PRESET_FILE_FORMAT, presets: this.user.map((p) => ({ id: p.id, name: p.name, display: p.display, description: p.description, cfg: M.hex(p.cfg), created: p.created, modified: p.modified })) })); return true; }
     catch { this.persistent = false; return false; }
   }
 
@@ -197,17 +202,18 @@ export class PresetStore {
     return n;
   }
 
-  add({ name, description = '', cfg }) {
+  add({ name, display = '', description = '', cfg }) {
     if (M.check(cfg) !== null) throw new Error('this configuration is not valid');
-    const p = { id: this.newId(), name: this.uniqueName(name), description: description.trim().slice(0, 400), cfg: Uint8Array.from(cfg), builtin: false, created: this.now(), modified: this.now() };
+    const p = { id: this.newId(), name: this.uniqueName(name), display: M.displayName(display), description: description.trim().slice(0, 400), cfg: Uint8Array.from(cfg), builtin: false, created: this.now(), modified: this.now() };
     this.user.push(p); this.persist();
     return p;
   }
 
-  update(id, { name, description, cfg } = {}) {
+  update(id, { name, display, description, cfg } = {}) {
     const p = this.user.find((x) => x.id === id);
     if (!p) throw new Error('only your own presets can be changed');
     if (name !== undefined) p.name = this.uniqueName(name, id);
+    if (display !== undefined) p.display = M.displayName(display);
     if (description !== undefined) p.description = description.trim().slice(0, 400);
     if (cfg !== undefined) { if (M.check(cfg) !== null) throw new Error('this configuration is not valid'); p.cfg = Uint8Array.from(cfg); }
     p.modified = this.now(); this.persist();
@@ -223,13 +229,13 @@ export class PresetStore {
   duplicate(id) {
     const p = this.get(id);
     if (!p) throw new Error('no such preset');
-    return this.add({ name: `${p.name} (copy)`, description: p.description, cfg: p.cfg });
+    return this.add({ name: `${p.name} (copy)`, display: p.display, description: p.description, cfg: p.cfg });
   }
 
   /** The text of a preset file with the given presets (default: all of the user's own). */
   exportJSON(ids = null) {
     const list = ids ? ids.map((i) => this.get(i)).filter(Boolean) : this.user;
-    return JSON.stringify({ format: D.PRESET_FILE_FORMAT, presets: list.map((p) => ({ name: p.name, description: p.description, cfg: M.hex(p.cfg) })) }, null, 1);
+    return JSON.stringify({ format: D.PRESET_FILE_FORMAT, presets: list.map((p) => ({ name: p.name, display_name: M.presetDisplayName(p), description: p.description, cfg: M.hex(p.cfg) })) }, null, 1);
   }
 
   /** Adds the presets of a preset file (or of the older single-mapping file); returns { added: [presets], skipped }. Throws on a file that
@@ -245,7 +251,7 @@ export class PresetStore {
       const cfg = cfgFromHex(o.cfg);
       if (!cfg || typeof o.name !== 'string') throw new Error(`the preset "${o?.name}" in this file is not valid`);
       if (this.list().some((p) => p.name === o.name.trim() && M.equal(p.cfg, cfg))) { skipped++; continue; }
-      added.push(this.add({ name: o.name, description: String(o.description || ''), cfg }));
+      added.push(this.add({ name: o.name, display: o.display_name || '', description: String(o.description || ''), cfg }));
     }
     return { added, skipped };
   }

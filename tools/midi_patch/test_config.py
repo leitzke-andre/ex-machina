@@ -34,11 +34,11 @@ check('the config block in the image is the host library\'s default_cfg()', fw[b
 
 # ---- INFO / GET ----
 d = Dev()
-check('INFO: protocol 2, 259-byte config, nothing saved, no changes', reply(d, mc.info_request()),
-      {'cmd': 0x10, 'protocol': 2, 'cfg_size': 259, 'saved': False, 'unsaved_changes': False, 'loaded_from_flash': False, 'version': 0})
+check('INFO: protocol 2, 274-byte config, nothing saved, no changes', reply(d, mc.info_request()),
+      {'cmd': 0x10, 'protocol': 2, 'cfg_size': 274, 'saved': False, 'unsaved_changes': False, 'loaded_from_flash': False, 'version': 0})
 raw = d.ask(mc.get_request())
-check('GET: one SysEx reply F0 7D 4D 4B 51 <296 packed bytes> F7, all data bytes below 0x80', (len(raw), len(raw[0]), raw[0][:5].hex(), all(b < 0x80 for b in raw[0][1:-1])),
-      (1, 302, 'f07d4d4b51', True))
+check('GET: one SysEx reply F0 7D 4D 4B 51 <314 packed bytes> F7, all data bytes below 0x80', (len(raw), len(raw[0]), raw[0][:5].hex(), all(b < 0x80 for b in raw[0][1:-1])),
+      (1, 320, 'f07d4d4b51', True))
 check('GET returns the active config, here the defaults', mc.parse_reply(raw[0])['cfg'], DEFAULTS)
 
 # ---- SET: valid ----
@@ -65,7 +65,7 @@ for name, vals in (('channel', (16, 255)), ('pad_note', (128, 200)), ('btn_cc', 
                    ('strip_cc', (128, 200)), ('vel_shift', (0, 9, 255)), ('led_channel', (16,)), ('pad_led', (80, 100, 254)), ('enc_mode', (3,)),
                    ('flags', (2,)), ('sens', (101, 200)), ('enc_init', (128,)), ('btn_mode', (3,)), ('led_flags', (32, 255)), ('btn_led_idle', (128,)),
                    ('btn_led_on', (200,)), ('pad_colour', (18, 255)), ('strip_colour', (18,)), ('vel_curve', (9, 255)), ('fixvel', (0, 128)),
-                   ('keys_root', (128,)), ('press_mode', (4,)), ('press_cc', (128,)), ('scale', (24, 255)), ('chord_type', (5,)), ('enc_tgt_cc', (128, 254)), ('arp_type', (6, 255)), ('arp_rate', (7,)), ('arp_oct', (0, 5)), ('btn_act2', (mc.ACT_LAST + 1, 255)), ('btn_cc2', (128, 254))):
+                   ('keys_root', (128,)), ('press_mode', (4,)), ('press_cc', (128,)), ('scale', (24, 255)), ('chord_type', (5,)), ('enc_tgt_cc', (128, 254)), ('arp_type', (6, 255)), ('arp_rate', (7,)), ('arp_oct', (0, 5)), ('btn_act2', (mc.ACT_LAST + 1, 255)), ('enc_pages', (0, 9)), ('enc_page_step', (0, 33)), ('enc_accel', (4,)), ('btn_cc2', (128, 254))):
     for v in vals: bad_cases.append((f'{name}={v}', mutate(name, 5 if F[name][1] > 5 else 0, v)))
 bad_cases.append(('magic', b'XMK3' + base[4:]))
 d = Dev(); before = mc.parse_reply(d.ask(mc.get_request())[0])['cfg']
@@ -134,10 +134,10 @@ reply(d, mc.set_request(new))
 r = reply(d, mc.save_request())
 rec = mc.build_record(new)
 check('SAVE: status 0', r['status'], 0)
-check('the page holds exactly the record the host library builds (272 bytes, CRC-16, magic)', d.page()[:mc.REC_SIZE], rec)
+check('the page holds exactly the record the host library builds (288 bytes, CRC-16, magic)', d.page()[:mc.REC_SIZE], rec)
 check('the rest of the page is still erased', d.page()[mc.REC_SIZE:], b'\xff' * (PAGE - mc.REC_SIZE))
-check('a blank page needs no erase; the record is 136 halfword programs inside the save page; no violations',
-      (d.flash.erases, len(d.flash.programs), d.flash.violations, all(bp.SAVE_PAGE <= a < bp.SAVE_PAGE + PAGE for a, _ in d.flash.programs)), ([], 136, [], True))
+check('a blank page needs no erase; the record is 144 halfword programs inside the save page; no violations',
+      (d.flash.erases, len(d.flash.programs), d.flash.violations, all(bp.SAVE_PAGE <= a < bp.SAVE_PAGE + PAGE for a, _ in d.flash.programs)), ([], 144, [], True))
 check('the magic is programmed last (the two final halfwords are at the start of the page)', [a for a, _ in d.flash.programs[-2:]], [bp.SAVE_PAGE, bp.SAVE_PAGE + 2])
 check('nothing but the save page changed in the flash', d.flash_image()[:SAVE_OFS] + d.flash_image()[SAVE_OFS + PAGE:] == initial[:SAVE_OFS] + initial[SAVE_OFS + PAGE:], True)
 r = reply(d, mc.info_request())
@@ -202,7 +202,7 @@ before = d.flash_image()
 reply(d, mc.set_request(new2)); n0 = len(d.flash.log); reply(d, mc.save_request())
 log = d.flash.log[n0:]
 erase_at = [i for i, e in enumerate(log) if e[0] == 'erase']
-check('a save over a saved record is one erase followed by 136 programs', (len(erase_at), len(log)), (1, 137))
+check('a save over a saved record is one erase followed by 144 programs', (len(erase_at), len(log)), (1, 145))
 seen = {}
 bad = []
 for cut in range(len(log) + 1):

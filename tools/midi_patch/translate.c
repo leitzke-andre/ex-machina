@@ -61,7 +61,9 @@ enum { ACT_CC, ACT_NOTE, ACT_START, ACT_CONT, ACT_STOP, ACT_MMC, ACT_NONE,
        ACT_SEQPAT,          /* pattern 1..4: parameter 0 = next, 1 = previous */
        ACT_SEQCLEAR,        /* parameter 0: clear the selected track of the pattern, 1: clear the whole pattern */
        ACT_SEQSAVE,         /* keep the four patterns in flash (they are loaded again at power-up) */
-       ACT_LAST = ACT_SEQSAVE };
+       ACT_PAGE,            /* pad page in Group mode: every pad plays 16 notes higher per page (0..7); parameter 0 = next, 1 = previous, 2 = back to page 1 */
+       ACT_ENCPAGE,         /* the encoder targets' page (enc_pages of them): the CC of target t on page p is enc_tgt_cc[t] + enc_page_step * p; parameter 0 = next, 1 = previous, 2 = page 1 */
+       ACT_LAST = ACT_ENCPAGE };
 /* Local LED behaviour (cfg.led_flags): the device lights itself, without any host feedback. */
 #define LF_BTN_IDLE  1      /* assigned buttons rest dimly lit */
 #define LF_BTN_PRESS 2      /* ... and light up while pressed (in toggle mode: while on) */
@@ -106,8 +108,12 @@ struct cfg {                /* lives in flash at CFG_ADDR, editable offline */
     u8 arp_rate;            /* 0..6: 1/4, 1/8, 1/8T, 1/16, 1/16T, 1/32, 1/32T */
     u8 arp_oct;             /* 1..4 octaves */
     u8 tempo;               /* start tempo in BPM minus 20 (20..275 BPM) */
+    u8 btn_mode_ovr[12];    /* per button (id k: byte k >> 2, bits 2 * (k & 3)): 0 = the global btn_mode, 1 gate, 2 toggle, 3 trigger */
+    u8 enc_pages;           /* 1..8: pages of encoder targets */
+    u8 enc_page_step;       /* 1..32: how far the CC of a target moves per page */
+    u8 enc_accel;           /* 0 = off, 1..3: turning faster takes bigger steps */
 } __attribute__((packed));
-_Static_assert(sizeof(struct cfg) == 259, "cfg layout is mirrored in mmk3_config.py");
+_Static_assert(sizeof(struct cfg) == 274, "cfg layout is mirrored in mmk3_config.py");
 #define CFG_DEFAULTS ((const struct cfg *)0x0800CE00)   /* the build-time defaults, in flash; the ACTIVE config is a RAM copy, see struct state */
 #define OFS(f) ((u32)__builtin_offsetof(struct cfg, f))
 
@@ -118,7 +124,7 @@ _Static_assert(sizeof(struct cfg) == 259, "cfg layout is mirrored in mmk3_config
 #define FONT_ADDR 0x0800D940u                            /* 5 x 7 font, ASCII 32..95, 5 column bytes each (bit 0 = top row) */
 #define TXT_ADDR 0x0800DA80u                             /* the texts of the display messages: 16 bytes each, NUL padded (build_patch.py TEXTS) */
 #define SCALE_N 24u
-#define SCALES ((const u16 *)0x0800E2C0)                 /* 12-bit masks of the scales, bit n = semitone n (build_patch.py SCALES) */
+#define SCALES ((const u16 *)0x0800E6C0)                 /* 12-bit masks of the scales, bit n = semitone n (build_patch.py SCALES) */
 
 struct state {              /* RAM above the firmware's stack, zeroed by mmk3_init */
     u32 magic;
@@ -137,7 +143,7 @@ struct state {              /* RAM above the firmware's stack, zeroed by mmk3_in
     u8 strip_led;           /* strip LED index + 1 currently lit by the finger, 0 = none */
     u16 sxn;                /* bytes collected in sx[] */
     u8 out[512];            /* outgoing USB-MIDI packets for one translate call */
-    u8 sx[320];             /* incoming SysEx body */
+    u8 sx[336];             /* incoming SysEx body */
     u8 led[80];             /* shadow of the LED codes shown (0xFF = never set); always written out COMPLETE, see led_flush() */
     u8 base[80];            /* the resting code of each LED: what it returns to when a local press / hit ends (host feedback sets it) */
     /* Run-time configuration (see the "configuration" section below): the active config is one of two RAM buffers and cfgp points at it,
@@ -151,10 +157,11 @@ struct state {              /* RAM above the firmware's stack, zeroed by mmk3_in
     u8 req;                 /* pending request (SysEx command 0x10..0x14), handled by mmk3_tick() */
     u8 slot_req;            /* a preset slot to load (1..4) or store (5..8), done by the main loop */
     u8 req_arg;
+    u8 slname[24] __attribute__((aligned(4)));          /* the name kept with a preset slot: of the last slot loaded or stored (0xFF padded; all 0xFF = none); a new config clears it */
     u8 req_err;             /* the request was malformed when it arrived */
     u16 reply_len, reply_pos;   /* SysEx reply waiting to be sent from the main loop */
     u8 stage[288];          /* config received by SET, validated and activated by the tick */
-    u8 reply[320] __attribute__((aligned(4)));      /* the reply being sent; also the scratch record the flash writers build (never while a reply is pending) */
+    u8 reply[336] __attribute__((aligned(4)));      /* the reply being sent; also the scratch record the flash writers build (never while a reply is pending) */
     /* The controller's own modes (run-time only: they start fresh at power-up; the velocity curve lives in the config) */
     u8 shift;               /* number of Shift buttons (ACT_SHIFT) held */
     u8 lay[6];              /* bit per button id: the press that is held used the shifted layer, so its release does too */
@@ -171,7 +178,10 @@ struct state {              /* RAM above the firmware's stack, zeroed by mmk3_in
     u8 strip_mode;          /* 0 the configured CC, 1 pitch bend, 2 mod wheel with a bar */
     u8 mod_val;             /* the mod wheel value the strip holds */
     u8 enc_tgt;             /* 0 = enc_cc, 1..3 = ACT_ENCTGT target */
-    u8 tval[3];             /* absolute value of each encoder target */
+    u8 enc_page;            /* the encoder target page in use */
+    u8 page;                /* the pad page (Group mode) */
+    u8 tval[8][3];          /* absolute value of each encoder target on each page */
+    u8 snap_page;           /* the encoder page the snapshot was taken on */
     u8 prog;                /* the program number ACT_PROGRAM is at */
     /* time, arp, mute / solo, strum, snapshot (phase 3) */
     u8 padfn;               /* 0 play, 1 mute edit, 2 solo edit */
@@ -296,6 +306,18 @@ static void led_flush(void)
 
 static u8 btn_defined(u8 act, u8 par) { return act == ACT_CC ? par != 0xff : act != ACT_NONE; }
 static u8 btn_has_action(const struct cfg *c, u32 k) { return btn_defined(c->btn_act[k], c->btn_cc[k]); }
+static u8 bmode(const struct cfg *c, u32 k)               /* the mode of a CC button: its own, else the global one (0 gate, 1 toggle, 2 trigger) */
+{
+    u8 o = (c->btn_mode_ovr[k >> 2] >> ((k & 3) * 2)) & 3;
+    return o ? (u8)(o - 1) : c->btn_mode;
+}
+static u8 tgt_cc(const struct cfg *c, u32 t, u32 page)    /* the CC of encoder target t (0..2) on a page; 0xFF = none (also when it would pass 127) */
+{
+    u32 v;
+    if (c->enc_tgt_cc[t] == 0xFF) return 0xFF;
+    v = c->enc_tgt_cc[t] + (u32)c->enc_page_step * page;
+    return v > 127 ? 0xFF : (u8)v;
+}
 
 static u8 pad_code(const struct cfg *c, u8 variant) { return (u8)(((c->pad_colour ? c->pad_colour : 17) << 2) | variant); }
 static u8 strip_code(const struct cfg *c) { return (u8)(((c->strip_colour ? c->strip_colour : 17) << 2) | 3); }
@@ -312,7 +334,7 @@ enum { T_PADMODE, T_KEYBOARD, T_FIXVEL, T_VEL16, T_VELOCITY, T_TRANSPOSE, T_PANI
        T_CHORDS, T_SCALE, T_CHORD, T_ENCODER, T_STRIP, T_PITCH, T_MOD, T_NORMAL, T_PROGRAM, T_PC, T_VALUE, T_CC, T_TRIAD, T_SEVENTH, T_SUS2, T_SUS4, T_POWER,
        T_SCALE0, T_SCALE1, T_SCALE2, T_SCALE3, T_SCALE4, T_SCALE5, T_SCALE6, T_SCALE7, T_SCALE8, T_SCALE9, T_SCALE10, T_SCALE11,
        T_SCALE12, T_SCALE13, T_SCALE14, T_SCALE15, T_SCALE16, T_SCALE17, T_SCALE18, T_SCALE19, T_SCALE20, T_SCALE21, T_SCALE22, T_SCALE23,
-       T_STEP, T_TRK, T_PAT, T_RUN, T_STOP, T_TRACK, T_PATTERN, T_CLEAR, T_PATTERNS, T_CHANNEL, T_SLOT, T_LOADED, T_SAVED, T_EMPTY, T_ERROR, T_EXNAME, T_VER, T_M0, T_M1, T_M2, T_CH, T_CLK, T_SEQ,
+       T_PAGE, T_ENCPAGE, T_STEP, T_TRK, T_PAT, T_RUN, T_STOP, T_TRACK, T_PATTERN, T_CLEAR, T_PATTERNS, T_CHANNEL, T_SLOT, T_LOADED, T_SAVED, T_EMPTY, T_ERROR, T_EXNAME, T_VER, T_M0, T_M1, T_M2, T_CH, T_CLK, T_SEQ,
        T_ARP, T_ARPTYPE, T_RATE, T_OCT, T_LATCH, T_TEMPO, T_BPM, T_CLOCK, T_MUTE, T_SOLO, T_CLEARED, T_LOCK, T_STORED, T_RECALLED, T_EXT, T_STRUM,
        T_AT0, T_AT1, T_AT2, T_AT3, T_AT4, T_AT5, T_RATE0, T_RATE1, T_RATE2, T_RATE3, T_RATE4, T_RATE5, T_RATE6, T_COUNT };
 
@@ -487,7 +509,7 @@ static u8 clampnote(int n) { return (u8)(n < 0 ? 0 : n > 127 ? 127 : n); }
 
 static int pad1_note(struct state *s, const struct cfg *c)    /* the lowest pad's note in the current mode, with the transposition */
 {
-    return (s->padmode ? c->keys_root : c->pad_note[12]) + s->transpose;
+    return (s->padmode ? c->keys_root : c->pad_note[12] + 16 * s->page) + s->transpose;
 }
 
 static void announce_pads(struct state *s, const struct cfg *c)
@@ -503,7 +525,7 @@ static void announce_pads(struct state *s, const struct cfg *c)
     }
     if (!s->padmode) {
         p = tx(b, p, T_GROUP, 21); p = tc(b, p, ' ', 21); p = tc(b, p, ' ', 21);
-        hi = c->pad_note[3] + s->transpose;
+        hi = c->pad_note[3] + s->transpose + 16 * s->page;
     }
     p = tnote(b, p, lo, 21); p = tc(b, p, '-', 21); tnote(b, p, hi, 21);
     m_show(s);
@@ -858,7 +880,7 @@ static void mode_action(struct state *s, const struct cfg *c, u8 act, u8 par)
         u32 t = par < 3 ? par + 1u : 0;
         s->enc_tgt = (u8)(s->enc_tgt == t ? 0 : t);
         m_begin(s, T_CC);
-        if (s->enc_tgt && c->enc_tgt_cc[s->enc_tgt - 1] != 0xFF) { u32 p = tc(s->mt, 2, ' ', 10); tn(s->mt, p, c->enc_tgt_cc[s->enc_tgt - 1], 10); tx(s->md, 0, T_ENCODER, 21); }
+        if (s->enc_tgt && tgt_cc(c, s->enc_tgt - 1u, s->enc_page) != 0xFF) { u32 p = tc(s->mt, 2, ' ', 10); tn(s->mt, p, tgt_cc(c, s->enc_tgt - 1u, s->enc_page), 10); tx(s->md, 0, T_ENCODER, 21); }
         else { s->mt[0] = 0; tx(s->mt, 0, T_ENCODER, 10); tx(s->md, 0, s->enc_tgt ? T_OFF : T_NORMAL, 21); }
         m_show(s);
     } else if (act == ACT_STEP) {
@@ -884,6 +906,25 @@ static void mode_action(struct state *s, const struct cfg *c, u8 act, u8 par)
     } else if (act == ACT_SEQSAVE) {
         s->seq_save = 1;                                  /* flash work: left to the main loop */
         return;
+    } else if (act == ACT_PAGE) {
+        u32 p;
+        s->page = (u8)(par == 2 ? 0 : par == 1 ? (s->page ? s->page - 1 : 7) : (s->page >= 7 ? 0 : s->page + 1));
+        m_begin(s, T_PAGE);
+        p = tn(s->md, 0, s->page + 1u, 21); p = tc(s->md, p, '/', 21); p = tn(s->md, p, 8, 21); p = tc(s->md, p, ' ', 21); p = tc(s->md, p, ' ', 21);
+        p = tnote(s->md, p, c->pad_note[12] + s->transpose + 16 * s->page, 21); p = tc(s->md, p, '-', 21); tnote(s->md, p, c->pad_note[3] + s->transpose + 16 * s->page, 21);
+        m_show(s);
+    } else if (act == ACT_ENCPAGE) {
+        u32 n = c->enc_pages ? c->enc_pages : 1, p, t;
+        s->enc_page = (u8)(par == 2 ? 0 : par == 1 ? (s->enc_page ? s->enc_page - 1 : n - 1) : (s->enc_page + 1u >= n ? 0 : s->enc_page + 1));
+        m_begin(s, T_ENCPAGE);
+        p = tn(s->md, 0, s->enc_page + 1u, 21); p = tc(s->md, p, '/', 21); p = tn(s->md, p, n, 21); p = tc(s->md, p, ' ', 21); p = tc(s->md, p, ' ', 21);
+        p = tx(s->md, p, T_CC, 21); p = tc(s->md, p, ' ', 21);
+        for (t = 0; t < 3; t++) {
+            u8 cc = tgt_cc(c, t, s->enc_page);
+            if (cc == 0xFF) p = tc(s->md, p, '-', 21); else p = tn(s->md, p, cc, 21);
+            if (t < 2) p = tc(s->md, p, ' ', 21);
+        }
+        m_show(s);
     } else if (act == ACT_TAP) {
         tap_tempo(s);
     } else if (act == ACT_ARP) {
@@ -956,14 +997,14 @@ static u32 pad_notes_now(struct state *s, const struct cfg *c, u8 pad, u8 *out)
 {
     u32 k, n = 1, deg = padnum(pad);
     int root = c->keys_root + s->transpose;
-    if (s->vel16) out[0] = clampnote(s->padmode ? root : c->pad_note[12] + s->transpose);
+    if (s->vel16) out[0] = clampnote(s->padmode ? root : c->pad_note[12] + s->transpose + 16 * s->page);
     else if (s->padmode == 2) {
         u32 v = chord_def(s->ctype), m = scale_mask(s, 1);
         n = v & 15;
         for (k = 0; k < n; k++) out[k] = clampnote(root + scale_note(m, deg + ((v >> (4 + 4 * k)) & 15)));
     }
     else if (s->padmode) out[0] = clampnote(root + scale_note(scale_mask(s, 0), deg));
-    else out[0] = clampnote(c->pad_note[pad] + s->transpose);
+    else out[0] = clampnote(c->pad_note[pad] + s->transpose + 16 * s->page);
     return n;
 }
 
@@ -1008,11 +1049,11 @@ static u8 *button_event(struct state *s, const struct cfg *c, u8 *q, u8 act, u8 
     if (act == ACT_SNAP) {
         u32 k;
         if (par == 1 || !s->snap_have) {
-            for (k = 0; k < 3; k++) s->snap[k] = s->tval[k];
-            s->snap[3] = s->mod_val; s->snap[4] = s->encabs; s->snap_have = 1;
+            for (k = 0; k < 3; k++) s->snap[k] = s->tval[s->enc_page][k];
+            s->snap_page = s->enc_page; s->snap[3] = s->mod_val; s->snap[4] = s->encabs; s->snap_have = 1;
             announce_text(s, T_LOCK, T_STORED);
         } else {
-            for (k = 0; k < 3; k++) { s->tval[k] = s->snap[k]; if (c->enc_tgt_cc[k] != 0xFF) q = emit(q, 0xB0 | ch, c->enc_tgt_cc[k], s->snap[k]); }
+            for (k = 0; k < 3; k++) { u8 cc = tgt_cc(c, k, s->snap_page); s->tval[s->snap_page][k] = s->snap[k]; if (cc != 0xFF) q = emit(q, 0xB0 | ch, cc, s->snap[k]); }
             s->mod_val = s->snap[3]; q = emit(q, 0xB0 | ch, 1, s->mod_val);
             s->encabs = s->snap[4]; if (c->enc_cc != 0xFF && c->enc_mode == 1) q = emit(q, 0xB0 | ch, c->enc_cc, s->encabs);
             strip_bar(s); led_flush();
@@ -1069,12 +1110,13 @@ u32 mmk3_translate(const u8 *buf, u32 len)
                     par = lay ? c->btn_cc2[k] : c->btn_cc[k];
                     if (btn_defined(act, par)) {
                         if (act == ACT_CC) {
-                            if (c->btn_mode == 1) {            /* toggle: alternate 127 / 0 on each press, nothing on release */
+                            u8 bm = bmode(c, k);
+                            if (bm == 1) {                     /* toggle: alternate 127 / 0 on each press, nothing on release */
                                 if (now) {
                                     s->tog[k >> 3] ^= bit;
                                     q = emit(q, 0xB0 | ch, par, (s->tog[k >> 3] & bit) ? 127 : 0);
                                 }
-                            } else if (c->btn_mode == 2) {     /* trigger: 127 on press only */
+                            } else if (bm == 2) {              /* trigger: 127 on press only */
                                 if (now) q = emit(q, 0xB0 | ch, par, 127);
                             } else {                           /* gate */
                                 q = emit(q, 0xB0 | ch, par, now ? 127 : 0);
@@ -1083,7 +1125,7 @@ u32 mmk3_translate(const u8 *buf, u32 len)
                             q = button_event(s, c, q, act, par, now);
                         }
                         if (k < 39 && (c->led_flags & LF_BTN_PRESS)) {
-                            if (act == ACT_CC && c->btn_mode == 1) {    /* toggle: the LED shows the state */
+                            if (act == ACT_CC && bmode(c, k) == 1) {    /* toggle: the LED shows the state */
                                 if (now) {
                                     s->base[k] = s->led[k] = (s->tog[k >> 3] & bit) ? c->btn_led_on : c->btn_led_idle;
                                     dirty = 1;
@@ -1100,12 +1142,16 @@ u32 mmk3_translate(const u8 *buf, u32 len)
                 /* The 4-bit counter counts UP when the knob is turned clockwise (measured on the real device with a clockwise-only
                  * recording), so the step is (new - old) and clockwise is positive, like NI's engine. */
                 u8 d = (r[6] - s->enc) & 15;
-                u8 cc = s->enc_tgt ? c->enc_tgt_cc[s->enc_tgt - 1] : c->enc_cc;
+                u8 cc = s->enc_tgt ? tgt_cc(c, s->enc_tgt - 1u, s->enc_page) : c->enc_cc;
                 ROOM(48);
                 if (d && cc != 0xff) {
                     int sd = d < 8 ? (int)d : (int)d - 16;
+                    if (c->enc_accel) {                        /* faster turns take bigger steps: |step| * (1 + accel * (|step| - 1)), at most 40 */
+                        int a = sd < 0 ? -sd : sd, m = a * (1 + (int)c->enc_accel * (a - 1));
+                        sd = sd < 0 ? -(m > 40 ? 40 : m) : (m > 40 ? 40 : m);
+                    }
                     if (s->enc_tgt || c->enc_mode == 1) {      /* absolute: the encoder's own value, or that of the target */
-                        u8 *pv = s->enc_tgt ? &s->tval[s->enc_tgt - 1] : &s->encabs;
+                        u8 *pv = s->enc_tgt ? &s->tval[s->enc_page][s->enc_tgt - 1] : &s->encabs;
                         int v = (int)*pv + sd;
                         u8 nv = (u8)(v < 0 ? 0 : v > 127 ? 127 : v);
                         if (nv != *pv) {                       /* like NI's engine: nothing is sent when the limit is hit */
@@ -1341,6 +1387,9 @@ static u32 cfg_check(const struct cfg *c)
     if (c->arp_type > 5) return OFS(arp_type) + 1;
     if (c->arp_rate > 6) return OFS(arp_rate) + 1;
     if (c->arp_oct < 1 || c->arp_oct > 4) return OFS(arp_oct) + 1;
+    if (c->enc_pages < 1 || c->enc_pages > 8) return OFS(enc_pages) + 1;
+    if (c->enc_page_step < 1 || c->enc_page_step > 32) return OFS(enc_page_step) + 1;
+    if (c->enc_accel > 3) return OFS(enc_accel) + 1;
     return 0;
 }
 
@@ -1382,9 +1431,9 @@ struct rec {
     u32 magic;
     u16 version, len;
     u16 crc, reserved;
-    u8 data[260];                                   /* the config, zero padded to a whole number of words */
+    u8 data[276];                                   /* the config, zero padded to a whole number of words */
 };
-_Static_assert(sizeof(struct rec) == 272 && sizeof(struct cfg) <= 260, "record layout is mirrored in mmk3_config.py");
+_Static_assert(sizeof(struct rec) == 288 && sizeof(struct cfg) <= 276, "record layout is mirrored in mmk3_config.py");
 #define SAVED ((const struct rec *)SAVE_PAGE)
 
 static void log_apply(struct cfg *c);
@@ -1397,7 +1446,8 @@ static void mode_reset(struct state *s, const struct cfg *c)
     s->padmode = s->fixed = s->vel16 = 0; s->transpose = 0;
     s->scale = c->scale; s->ctype = c->chord_type;
     s->strip_mode = 0; s->mod_val = 0; s->bar_on = 0; s->enc_tgt = 0; s->prog = 0;
-    for (k = 0; k < 3; k++) s->tval[k] = 64;
+    for (k = 0; k < 24; k++) s->tval[k / 3][k % 3] = 64;
+    s->enc_page = 0; s->page = 0;
     s->padfn = 0; s->mute = s->solo = 0;
     s->arp_on = 0; s->ann = 0; s->parp = 0; s->latch = 0; s->clock_out = 0;     /* (what the arp has sounding is released by the tick) */
     s->arp_type = c->arp_type; s->arp_rate = c->arp_rate; s->arp_oct = c->arp_oct; s->bpm = (u16)(c->tempo + 20);
@@ -1429,7 +1479,9 @@ static void cfg_load(struct state *s)
 {
     struct cfg *c = &s->cfgbuf[0];
     copy8(c, CFG_DEFAULTS, sizeof *c);
+    u32 k;
     s->cfgp = c; s->cfgi = 0;
+    for (k = 0; k < 24; k++) s->slname[k] = 0xFF;
     if (rec_load(SAVE_PAGE, &s->cfgbuf[1])) { copy8(c, &s->cfgbuf[1], sizeof *c); s->saved = 1; s->flags_boot = 1; }
     log_apply(c);
 }
@@ -1494,7 +1546,9 @@ static u32 save_erase(void) { return page_erase(SAVE_PAGE); }   /* the saved con
 
 /* Writes a config as a record into a page: 1 on success (verified by reading it back). The magic goes last, so a cut leaves no valid record. The record
  * is built in s->reply (a stack buffer of that size would cost a quarter of the stack): callers make sure no reply is waiting there. */
-static u32 rec_write(struct state *s, u32 page, const struct cfg *c)
+#define SLOT_NAME 0x120u                            /* a slot's name: 24 bytes behind its record (a blank byte = none) */
+#define NAME_MAX 20u                                /* characters of a name: what the detail line shows whole (6 pixels each from x = 4) */
+static u32 rec_write(struct state *s, u32 page, const struct cfg *c, u32 named)
 {
     struct rec *r = (struct rec *)s->reply;
     u32 *w = (u32 *)s->reply;
@@ -1502,16 +1556,23 @@ static u32 rec_write(struct state *s, u32 page, const struct cfg *c)
     for (k = 0; k < n; k++) w[k] = 0;
     copy8(r->data, c, sizeof *c);
     r->magic = REC_MAGIC; r->version = REC_VERSION; r->len = sizeof *c; r->crc = crc16(r->data, sizeof *c); r->reserved = 0xFFFF;
-    if (same8((const void *)page, r, sizeof *r) && (page != SAVE_PAGE || log_blank())) return 1;     /* already there (and no curve log to clear): no erase, no wear */
+    if (same8((const void *)page, r, sizeof *r) && (page != SAVE_PAGE || log_blank()) && (!named || same8((const void *)(page + SLOT_NAME), s->slname, 24))) return 1;     /* already there (and no curve log to clear): no erase, no wear */
     if (!page_erase(page)) return 0;
     FLASH_UNLOCK(); FLASH_CLEAR(0x35);
     for (k = 3; k < n; k++) FLASH_PROG(page + 4 * k, w[k]);   /* the data first ... */
     FLASH_PROG(page + 4, w[1]); FLASH_PROG(page + 8, w[2]);
     FLASH_PROG(page, w[0]);                                    /* ... the magic last */
+    if (named) for (k = 0; k < 6; k++) if (((const u32 *)s->slname)[k] != 0xFFFFFFFFu) FLASH_PROG(page + SLOT_NAME + 4 * k, ((const u32 *)s->slname)[k]);
     FLASH_LOCK();
     return same8((const void *)page, r, sizeof *r);
 }
-static u32 save_write(struct state *s, const struct cfg *c) { return rec_write(s, SAVE_PAGE, c); }
+static u32 save_write(struct state *s, const struct cfg *c) { return rec_write(s, SAVE_PAGE, c, 0); }
+static void slname_load(struct state *s, u32 page)       /* the slot's name into slname: printable characters up to the first other byte */
+{
+    const u8 *p = (const u8 *)(page + SLOT_NAME);
+    u32 k, ok = 1;
+    for (k = 0; k < 24; k++) { u8 ch = p[k]; if (k >= NAME_MAX || ch < 32 || ch > 95) ok = 0; s->slname[k] = ok ? ch : 0xFF; }
+}
 
 /* Appends a word to the settings log. A full log is cleared by a full save of the active config (which erases the page), or, when nothing
  * is saved, by an erase. */
@@ -1578,8 +1639,10 @@ static void cfg_commit(struct state *s, const struct cfg *n)
 {
     u8 i = s->cfgi ^ 1;                             /* fill the buffer that is not in use, then switch */
     copy8(&s->cfgbuf[i], n, sizeof *n);
+    u32 k;
     s->cfgi = i;
     s->dirty = 1;
+    for (k = 0; k < 24; k++) s->slname[k] = 0xFF;        /* a new config has no slot name (a slot load sets it after) */
     cfg_activate(s, &s->cfgbuf[i]);
 }
 
@@ -1591,9 +1654,12 @@ static void slot_do(struct state *s, u32 op)
     p = tc(s->mt, 4, ' ', 10); tn(s->mt, p, n + 1, 10);
     if (op <= 4) {
         struct cfg *t = &s->cfgbuf[s->cfgi ^ 1];               /* the buffer that is not in use */
-        if (rec_load(SLOT_PAGE(n), t)) { tx(s->md, 0, T_LOADED, 21); cfg_commit(s, t); }
-        else tx(s->md, 0, T_EMPTY, 21);
-    } else tx(s->md, 0, rec_write(s, SLOT_PAGE(n), s->cfgp) ? T_SAVED : T_ERROR, 21);
+        if (rec_load(SLOT_PAGE(n), t)) {
+            cfg_commit(s, t); slname_load(s, SLOT_PAGE(n));
+            if (s->slname[0] != 0xFF) { u32 k = 0; while (k < NAME_MAX && s->slname[k] != 0xFF) { tc(s->md, k, (char)s->slname[k], 21); k++; } }
+            else tx(s->md, 0, T_LOADED, 21);
+        } else tx(s->md, 0, T_EMPTY, 21);
+    } else tx(s->md, 0, rec_write(s, SLOT_PAGE(n), s->cfgp, 1) ? T_SAVED : T_ERROR, 21);
     m_show(s);
 }
 
@@ -1652,7 +1718,15 @@ static void req_start(struct state *s, const u8 *b, u32 n)
     s->req_err = 0; s->req_arg = n > 1 ? b[1] : 0;
     if (b[0] == 0x1E) { copy8(s->stage, b + 1, n > 7 ? 6 : n - 1); if (n != 7) s->req_err = 1; }
     if (b[0] == 0x12 && unpack7(s->stage, sizeof s->stage, b + 1, n - 1) != sizeof(struct cfg)) s->req_err = 1;
-    if ((b[0] == 0x15 || b[0] == 0x16) && n != 2) s->req_err = 1;       /* the slot number is required */
+    if ((b[0] == 0x15 && (n < 2 || n > 2 + NAME_MAX)) || (b[0] == 0x16 && n != 2)) s->req_err = 1;       /* the slot number is required, a store may add a name (up to 20 characters) */
+    if (b[0] == 0x15 && !s->req_err) {
+        u32 k;
+        for (k = 0; k < 24; k++) {
+            u8 ch = k < NAME_MAX && k + 2 < n ? b[k + 2] : 0xFF;
+            if (ch != 0xFF) { if (ch >= 97 && ch <= 122) ch -= 32; if (ch < 32 || ch > 95) ch = '?'; }
+            s->slname[k] = ch;
+        }
+    }
     s->req = b[0];
 }
 
@@ -1664,13 +1738,19 @@ static void request(struct state *s)                 /* main loop: one pending r
         u32 n = s->req_arg;
         if (s->req_err) status = 1;
         else if (n > 3) status = 2;
-        else if (cmd == 0x15) status = rec_write(s, SLOT_PAGE(n), s->cfgp) ? 0 : 3;
-        else { struct cfg *t = &s->cfgbuf[s->cfgi ^ 1]; if (rec_load(SLOT_PAGE(n), t)) cfg_commit(s, t); else status = 4; }
+        else if (cmd == 0x15) status = rec_write(s, SLOT_PAGE(n), s->cfgp, 1) ? 0 : 3;
+        else { struct cfg *t = &s->cfgbuf[s->cfgi ^ 1]; if (rec_load(SLOT_PAGE(n), t)) { cfg_commit(s, t); slname_load(s, SLOT_PAGE(n)); } else status = 4; }
         rep_start(s, 0x40 + cmd); rep_byte(s, status); rep_end(s);
     } else if (cmd == 0x17) {                        /* which slots hold a config: a bit mask */
         u32 i, mask = 0;
         for (i = 0; i < 4; i++) if (rec_ok(SLOT_PAGE(i))) mask |= 1u << i;
-        rep_start(s, 0x57); rep_byte(s, 0); rep_byte(s, (u8)mask); rep_end(s);
+        rep_start(s, 0x57); rep_byte(s, 0); rep_byte(s, (u8)mask);
+        for (i = 0; i < 4; i++) {                    /* then the names: 20 characters each, 0 = none / padding */
+            const u8 *nm = (const u8 *)(SLOT_PAGE(i) + SLOT_NAME);
+            u32 k, ok = (mask >> i) & 1;
+            for (k = 0; k < NAME_MAX; k++) { if (nm[k] < 32 || nm[k] > 95) ok = 0; rep_byte(s, ok ? nm[k] : 0); }
+        }
+        rep_end(s);
     } else if (cmd == 0x10) {
         rep_start(s, 0x50);
         rep_byte(s, PROTO_VERSION); rep_byte(s, sizeof(struct cfg) & 0x7F); rep_byte(s, sizeof(struct cfg) >> 7);

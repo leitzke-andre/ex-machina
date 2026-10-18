@@ -46,7 +46,7 @@ const make = (storage) => new P.PresetStore({ storage, now: () => ++t, newId: ()
 const st = memory(); let s = make(st);
 check('the built-in presets: "Default" is the default configuration, "Groove Rider 2" differs from it in exactly the documented places',
   s.list().length === M.D.BUILTIN_PRESETS.length && s.list()[0].id === 'default' && s.list()[0].builtin && M.equal(s.get('default').cfg, D) && s.list()[1].id === 'maschine-modes' && s.list()[2].id === 'groove-rider-2'
-  && same(P.diffCfg(D, s.get('groove-rider-2').cfg), ['Erase: CC 54 → CC 120', 'Encoder Touch: CC 9 → nothing', 'Encoder CC: 7 → 20', 'Encoder mode: absolute → relative', 'Strip CC: 1 → 74']), JSON.stringify(P.diffCfg(D, s.get('groove-rider-2').cfg)));
+  && same(P.diffCfg(D, s.get('groove-rider-2').cfg), ['Erase: CC 54 → CC 120', 'Shift: CC 43 → Shift', 'Scene with Shift: as without Shift → load slot 1', 'Pattern with Shift: as without Shift → load slot 2', 'Events with Shift: as without Shift → load slot 3', 'Variation with Shift: as without Shift → load slot 4', 'Encoder Touch: CC 9 → nothing', 'Encoder CC: 7 → 20', 'Encoder mode: absolute → relative', 'Strip CC: 1 → 74']), JSON.stringify(P.diffCfg(D, s.get('groove-rider-2').cfg)));
 const a = s.add({ name: 'Mine', description: ' my setup ', cfg: set(D, 'channel', 2) });
 check('add: a user preset with trimmed description, stored', a.id === 'u-1' && a.description === 'my setup' && !a.builtin && st.raw.has(P.STORAGE_KEY));
 const b = s.add({ name: 'mine', cfg: set(D, 'channel', 3) });
@@ -88,7 +88,7 @@ for (const [what, bad] of [['another tool\'s file', '{"format":"x"}'], ['a prese
 }
 const shortCfg = JSON.stringify({ format: 'mmk3-presets-1', presets: [{ name: 'Old', cfg: M.hex(set(D, 'channel', 4)).slice(0, 200) }] });
 const sh = make(memory()).importJSON(shortCfg).added[0];
-check('a preset from an older layout (shorter) is laid over the defaults', sh && sh.cfg.length === 259 && sh.cfg[F.channel[0]] === 4 && M.equal(sh.cfg.slice(100), D.slice(100)));
+check('a preset from an older layout (shorter) is laid over the defaults', sh && sh.cfg.length === 274 && sh.cfg[F.channel[0]] === 4 && M.equal(sh.cfg.slice(100), D.slice(100)));
 
 // ---- storage that does not work ----
 const broken = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('quota'); } };

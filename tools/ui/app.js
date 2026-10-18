@@ -79,16 +79,18 @@ const ACTIONS = [['cc', 'Control Change (CC)'], ['note', 'Note'], ['start', 'MID
   ['tap', 'Tap tempo'], ['clockout', 'MIDI clock out (on / off)'], ['arp', 'Arp / Note Repeat (on / off)'], ['arptype', 'Arp pattern: step'], ['rate', 'Arp rate: step'], ['arpoct', 'Arp octaves: step'],
   ['latch', 'Arp latch (hold)'], ['mute', 'Mute pads (edit)'], ['solo', 'Solo pads (edit)'], ['clear', 'Clear mutes and solos'], ['snap', 'Snapshot (Lock)'],
   ['channel', 'MIDI channel: step'], ['slot', 'Preset slot (load / store)'], ['step', 'Step sequencer mode'], ['seqrun', 'Sequencer start / restart'], ['seqsel', 'Sequencer: select track (hold)'],
-  ['seqpat', 'Sequencer pattern: step'], ['seqclear', 'Sequencer clear'], ['seqsave', 'Sequencer: keep patterns']];
+  ['seqpat', 'Sequencer pattern: step'], ['seqclear', 'Sequencer clear'], ['seqsave', 'Sequencer: keep patterns'],
+  ['page', 'Pad page (16 notes per page)'], ['encpage', 'Encoder page']];
 const PARAM_CHOICES = {
   curve: [[0, 'Next curve'], [1, 'Previous curve']], scale: [[0, 'Next scale'], [1, 'Previous scale']], chordtype: [[0, 'Next type'], [1, 'Previous type']],
   strip: [[0, 'The configured CC'], [1, 'Pitch bend'], [2, 'Mod wheel (holds, bar)'], [3, 'Strum notes']],
   channel: [[0, 'Next channel'], [1, 'Previous channel']], seqrun: [[0, 'Start / stop'], [1, 'Restart']], seqpat: [[0, 'Next pattern'], [1, 'Previous pattern']], seqclear: [[0, 'The selected track'], [1, 'The whole pattern']],
   slot: [[0, 'Load slot 1'], [1, 'Load slot 2'], [2, 'Load slot 3'], [3, 'Load slot 4'], [4, 'Store in slot 1'], [5, 'Store in slot 2'], [6, 'Store in slot 3'], [7, 'Store in slot 4']],
   arptype: [[0, 'Next pattern'], [1, 'Previous pattern']], rate: [[0, 'Next rate'], [1, 'Previous rate']], snap: [[0, 'Store, then recall'], [1, 'Store again']], enctgt: [[0, 'Target 1'], [1, 'Target 2'], [2, 'Target 3']], program: [[0, 'Next'], [1, 'Previous'], [2, 'Back to 0']],
+  page: [[0, 'Next page'], [1, 'Previous page'], [2, 'Back to page 1']], encpage: [[0, 'Next page'], [1, 'Previous page'], [2, 'Back to page 1']],
 };
 const MMC = [[1, 'Stop'], [2, 'Play'], [4, 'Fast forward'], [5, 'Rewind'], [6, 'Record strobe'], [9, 'Pause']];
-const HINTS = { padmode: 'the pads play the notes of the Pads tab', keys: 'pad 1 = the first note (Pads tab), chromatic upwards', fixvel: 'toggle · lit while on', vel16: 'toggle · all pads, one note',
+const HINTS = { page: 'drum pads move up by 16 notes (8 pages)', encpage: 'the encoder targets move to the next group of CCs (Encoder tab)', padmode: 'the pads play the notes of the Pads tab', keys: 'pad 1 = the first note (Pads tab), chromatic upwards', fixvel: 'toggle · lit while on', vel16: 'toggle · all pads, one note',
   panic: 'All Sound Off + All Notes Off', shift: 'hold, then press another button', chords: 'a chord on each pad (scale and type below)', scale: 'Keyboard and Chords mode follow it',
   chordtype: 'triad, seventh, sus2, sus4, power', strip: 'mod: the strip shows the value as a bar; strum: the strip plays the held pads\' notes', tap: 'tap the beat; ignored while a MIDI clock comes in', clockout: '24 pulses per beat, Start / Stop on switching',
   arp: 'held pads play in time (pattern and rate below)', arpoct: 'steps 1 to 4 octaves', latch: 'the arp goes on after the pads are released', mute: 'then hit pads to mute them', solo: 'then hit pads to solo them', clear: 'all pads play again', channel: 'kept when unplugged; a panic is sent on the old channel', slot: 'four configs in the device\'s flash', step: 'pads = the 16 steps of the selected track', seqrun: 'follows the tempo / clock', seqsel: 'hold, then hit a pad', seqpat: '4 patterns', seqclear: 'on the pattern shown', seqsave: 'patterns come back at power-up', enctgt: 'CCs are on the Encoder & strip tab; again = back', program: 'message on the screen' };
@@ -122,7 +124,11 @@ function buttonRow(id, layer) {
   const curve = el('select', { 'aria-label': `${tag}: choice` });
   const semi = el('input', { type: 'number', min: -64, max: 63, 'aria-label': `${tag}: semitones`, title: 'Semitones (+12 = one octave up)' });
   for (const [v, t] of MMC) mmc.append(el('option', { value: v, text: t }));
-  const hint = el('div', { class: 'hint' });
+  const hint = el('div', { class: 'hint' }), hintText = el('span');
+  const modeSel = el('select', { 'aria-label': `${tag}: CC mode`, title: 'How this button sends its CC' });
+  for (const [v, t] of [[-1, 'like all buttons'], [0, 'gate'], [1, 'toggle'], [2, 'trigger']]) modeSel.append(el('option', { value: v, text: t }));
+  const MO = FD.btn_mode_ovr[0] + (id >> 2), MS = (id & 3) * 2;                      // 2 bits per button: 0 = the global mode, 1..3 = gate, toggle, trigger
+  hint.append(hintText, modeSel);
   for (const [v, t] of ACTIONS) sel.append(el('option', { value: v, text: v === 'none' && layer ? 'Same as without Shift' : t }));
   numWrap.append(num, mmc, curve, semi);
   const effective = () => (state.cfg[A] === 0 && state.cfg[C] === 0xff ? 'none' : D.ACTION_NAMES[state.cfg[A]]);
@@ -137,8 +143,10 @@ function buttonRow(id, layer) {
       curve.value = String(PARAM_CHOICES[act].some(([v]) => v === p) ? p : 0);
     }
     if (!semi.hidden) { semi.value = p > 127 ? 0 : p - 64; semi.classList.remove('bad'); }
-    hint.textContent = act === 'note' && p <= 127 ? M.noteName(p) : act === 'cc' ? (p <= 127 ? `CC ${p}` : '') : act === 'mmc' ? 'F0 7F 7F 06 …' : act === 'none' ? '' : act === 'curve' ? 'message on the screen' : act === 'transpose' ? 'semitones; applies to the pads' : HINTS[act] ?? 'on press';
-    $('blist').querySelectorAll(`[data-btn="${id}${layer ? 's' : ''}"]`).forEach((n) => n.classList.toggle('changed', !!state.deviceCfg && (state.cfg[A] !== state.deviceCfg[A] || state.cfg[C] !== state.deviceCfg[C])));
+    modeSel.hidden = layer !== 0 || act !== 'cc' || id > 40;
+    if (!modeSel.hidden) { const o = (state.cfg[MO] >> MS) & 3; modeSel.value = String(o - 1); }
+    hintText.textContent = act === 'note' && p <= 127 ? M.noteName(p) : act === 'cc' ? (p <= 127 ? `CC ${p}` : '') : act === 'mmc' ? 'F0 7F 7F 06 …' : act === 'none' ? '' : act === 'curve' ? 'message on the screen' : act === 'transpose' ? 'semitones; applies to the pads' : HINTS[act] ?? 'on press';
+    $('blist').querySelectorAll(`[data-btn="${id}${layer ? 's' : ''}"]`).forEach((n) => n.classList.toggle('changed', !!state.deviceCfg && (state.cfg[A] !== state.deviceCfg[A] || state.cfg[C] !== state.deviceCfg[C] || (!layer && ((state.cfg[MO] >> MS) & 3) !== ((state.deviceCfg[MO] >> MS) & 3)))));
   };
   sel.addEventListener('change', () => {
     const v = sel.value;
@@ -159,6 +167,7 @@ function buttonRow(id, layer) {
     if (num.value !== '' && Number.isInteger(n) && n >= 0 && n <= 127) { num.classList.remove('bad'); state.cfg[C] = n; edited(); } else num.classList.add('bad');
   });
   num.addEventListener('change', sync);
+  modeSel.addEventListener('change', () => { state.cfg[MO] = (state.cfg[MO] & ~(3 << MS)) | ((Number(modeSel.value) + 1) << MS); edited(); });
   mmc.addEventListener('change', () => { state.cfg[C] = Number(mmc.value); edited(); });
   curve.addEventListener('change', () => { state.cfg[C] = Number(curve.value); edited(); });
   semi.addEventListener('input', () => {
@@ -237,6 +246,11 @@ function buildOthers() {
   addSync(() => { $('keys-root-name').textContent = M.noteName(state.cfg[FD.keys_root[0]]); });
   selectField($('f-scale'), D.SCALE_NAMES.map((n, i) => [i, n[0].toUpperCase() + n.slice(1)]), () => state.cfg[FD.scale[0]], (v) => { state.cfg[FD.scale[0]] = v; });
   selectField($('f-chord_type'), D.CHORD_NAMES.map((n, i) => [i, n[0].toUpperCase() + n.slice(1)]), () => state.cfg[FD.chord_type[0]], (v) => { state.cfg[FD.chord_type[0]] = v; });
+  $('f-enc_pages').replaceWith(numField({ ...byte('enc_pages'), min: 1, max: 8, label: 'Encoder pages' }));
+  $('f-enc_page_step').replaceWith(numField({ ...byte('enc_page_step'), min: 1, max: 32, label: 'CC step per page' }));
+  selectField($('f-enc_accel'), [[0, 'Off'], [1, 'Gentle'], [2, 'Medium'], [3, 'Strong']], () => state.cfg[FD.enc_accel[0]], (v) => { state.cfg[FD.enc_accel[0]] = v; });
+  addSync(() => { const n = state.cfg[FD.enc_pages[0]], st = state.cfg[FD.enc_page_step[0]], t = [0, 1, 2].map((i) => state.cfg[FD.enc_tgt_cc[0] + i]).filter((v) => v !== 0xff);
+    $('enc-pages-info').textContent = n > 1 && t.length ? `Page ${n}: CC ${t.map((v) => v + st * (n - 1)).filter((v) => v <= 127).join(', ') || 'none (past 127)'}` : ''; });
   for (let i = 0; i < 3; i++) $(`f-enc_tgt${i}`).replaceWith(numField({ ...byte('enc_tgt_cc', i), min: 0, max: 127, none: true, noneLabel: 'nothing', label: `Encoder target ${i + 1} CC` }));
   selectField($('f-arp_type'), D.ARP_TYPES.map((n, i) => [i, n[0].toUpperCase() + n.slice(1)]), () => state.cfg[FD.arp_type[0]], (v) => { state.cfg[FD.arp_type[0]] = v; });
   selectField($('f-arp_rate'), D.ARP_RATES.map((n, i) => [i, n]), () => state.cfg[FD.arp_rate[0]], (v) => { state.cfg[FD.arp_rate[0]] = v; });
@@ -320,7 +334,7 @@ async function refreshInfo() { state.info = await state.client.info(); }
 
 /** The four preset slots in the device's flash: which hold a configuration, and the buttons to store the current one / make one the active one. */
 async function refreshSlots() {
-  try { state.slots = state.client ? await state.client.slots() : null; } catch { state.slots = null; }
+  try { const r = state.client ? await state.client.request(M.slotsRequest(), M.CMD.SLOTS) : null; state.slots = r ? r.used : null; state.slotNames = r ? r.names : null; } catch { state.slots = null; state.slotNames = null; }
   renderSlots();
 }
 function renderSlots() {
@@ -330,12 +344,12 @@ function renderSlots() {
     const used = state.slots ? state.slots[i] : null, conn = !!state.client && state.slots !== null;
     const store = el('button', { type: 'button', text: 'Store current', disabled: !conn || undefined, onclick: () => slotAction(i, true) });
     const load = el('button', { type: 'button', text: 'Make active', disabled: !conn || !used || undefined, onclick: () => slotAction(i, false) });
-    host.append(el('div', { class: 'row' }, el('strong', { text: `Slot ${i + 1}`, style: 'min-width:60px' }), el('span', { class: 'tag' + (used ? ' dev' : ''), text: state.slots ? (used ? 'holds a configuration' : 'empty') : 'not connected' }), el('span', { class: 'grow' }), store, load));
+    host.append(el('div', { class: 'row' }, el('strong', { text: `Slot ${i + 1}`, style: 'min-width:60px' }), el('span', { class: 'tag' + (used ? ' dev' : ''), text: state.slots ? (used ? (state.slotNames?.[i] ? `holds ${state.slotNames[i]}` : 'holds a configuration') : 'empty') : 'not connected' }), el('span', { class: 'grow' }), store, load));
   }
 }
 async function slotAction(i, store) {
   try {
-    const r = store ? await state.client.slotStore(i) : await state.client.slotLoad(i);
+    const r = store ? await state.client.slotStore(i, currentPreset().preset ? M.presetDisplayName(currentPreset().preset) : '') : await state.client.slotLoad(i);
     if (r.status !== 0) { say(`Slot ${i + 1}: ${r.status_text}.`, true); return; }
     if (store) say(`Stored the active configuration in slot ${i + 1} on the device.`);
     else { await readFromDevice(); say(`Slot ${i + 1} is the active configuration now (not saved as the power-up one: Save on device keeps it).`); }
@@ -421,11 +435,11 @@ function applyTransport(name) {                     // Play, Rec and Stop only; 
 }
 
 /** Asks for a name and a description in the page's own dialog; resolves to { name, description } or null if cancelled. */
-function askDetails({ title, name = '', description = '', ok = 'Save' }) {
+function askDetails({ title, name = '', display = '', description = '', ok = 'Save' }) {
   const dlg = $('dlg');
-  $('dlg-title').textContent = title; $('dlg-name').value = name; $('dlg-desc').value = description; $('dlg-ok').textContent = ok;
+  $('dlg-title').textContent = title; $('dlg-name').value = name; $('dlg-display').value = display; $('dlg-display').placeholder = M.presetDisplayName({ name: name || 'Preset' }); $('dlg-desc').value = description; $('dlg-ok').textContent = ok;
   return new Promise((resolve) => {
-    dlg.addEventListener('close', () => resolve(dlg.returnValue === 'ok' ? { name: $('dlg-name').value.trim(), description: $('dlg-desc').value.trim() } : null), { once: true });
+    dlg.addEventListener('close', () => resolve(dlg.returnValue === 'ok' ? { name: $('dlg-name').value.trim(), display: $('dlg-display').value.trim(), description: $('dlg-desc').value.trim() } : null), { once: true });
     dlg.returnValue = 'cancel';
     dlg.showModal(); $('dlg-name').focus(); $('dlg-name').select();
   });
@@ -443,9 +457,9 @@ async function usePreset(id) {
 
 async function savePresetAs() {
   const cur = currentPreset().preset;
-  const r = await askDetails({ title: 'Save as preset', name: cur ? `${cur.name} (mine)` : 'My preset', description: cur && !cur.builtin ? cur.description : '' });
+  const r = await askDetails({ title: 'Save as preset', name: cur ? `${cur.name} (mine)` : 'My preset', display: '', description: cur && !cur.builtin ? cur.description : '' });
   if (!r || !r.name) return;
-  const p = store.add({ name: r.name, description: r.description, cfg: state.cfg });
+  const p = store.add({ name: r.name, display: r.display, description: r.description, cfg: state.cfg });
   state.presetId = p.id; refreshAll(); say(`Saved the preset "${p.name}"${store.persistent ? '' : ' (this browser cannot keep it after the page is closed: export it)'}.`);
 }
 
@@ -470,8 +484,8 @@ async function presetAction(act, id) {
     if (act === 'use') await usePreset(id);
     else if (act === 'dup') { const c = store.duplicate(id); refreshAll(); say(`Made "${c.name}", a copy you can change.`); }
     else if (act === 'edit') {
-      const r = await askDetails({ title: 'Rename preset', name: p.name, description: p.description, ok: 'Save' });
-      if (r && r.name) { store.update(id, { name: r.name, description: r.description }); refreshAll(); }
+      const r = await askDetails({ title: 'Rename preset', name: p.name, display: p.display, description: p.description, ok: 'Save' });
+      if (r && r.name) { store.update(id, { name: r.name, display: r.display, description: r.description }); refreshAll(); }
     } else if (act === 'export') downloadText(`mikro-mk3-preset-${p.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'preset'}.json`, store.exportJSON([id]));
     else if (act === 'del') {
       if (!confirm(`Delete the preset "${p.name}"? This cannot be undone.`)) return;
@@ -492,6 +506,7 @@ function renderPresetCards() {
     const head = el('div', { class: 'phead' }, el('h3', { text: p.name }), el('span', { class: 'tag', text: p.builtin ? 'built-in' : 'mine' }));
     if (isCur) head.append(el('span', { class: 'tag on', text: modified ? 'in editor, changed' : 'in editor' }));
     if (onDevice) head.append(el('span', { class: 'tag dev', text: 'on device' }));
+    head.append(el('span', { class: 'tag', title: 'What the device\'s screen shows when a slot holding this preset is loaded', text: `screen: ${M.presetDisplayName(p)}` }));
     const btn = (act, text, cls = '', title = '') => el('button', { type: 'button', class: cls, title, onclick: () => presetAction(act, p.id) , text });
     const btns = el('div', { class: 'btns' }, btn('use', 'Use', 'primary', 'Load it into the editor and send it to the device if connected'), btn('dup', 'Duplicate'));
     if (!p.builtin) btns.append(btn('edit', 'Rename…'), btn('export', 'Export'), btn('del', 'Delete', 'danger'));

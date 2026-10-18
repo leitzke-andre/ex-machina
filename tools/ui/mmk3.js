@@ -30,7 +30,7 @@ export function check(cfg) {
   for (let i = 0; i < 16; i++) order.push(['pad_led', i]);
   for (const n of ['enc_mode', 'flags', 'sens', 'enc_init', 'btn_mode', 'led_flags', 'btn_led_idle', 'btn_led_on', 'pad_colour', 'strip_colour', 'vel_curve', 'fixvel', 'keys_root', 'press_mode', 'press_cc']) order.push([n, 0]);
   for (let i = 0; i < 48; i++) order.push(['btn_cc2', i], ['btn_act2', i]);
-  order.push(['scale', 0], ['chord_type', 0], ['enc_tgt_cc', 0], ['enc_tgt_cc', 1], ['enc_tgt_cc', 2], ['arp_type', 0], ['arp_rate', 0], ['arp_oct', 0]);
+  order.push(['scale', 0], ['chord_type', 0], ['enc_tgt_cc', 0], ['enc_tgt_cc', 1], ['enc_tgt_cc', 2], ['arp_type', 0], ['arp_rate', 0], ['arp_oct', 0], ['enc_pages', 0], ['enc_page_step', 0], ['enc_accel', 0]);
   for (const [name, i] of order) if (bad(name, i)) return D.FIELDS[name][0] + i;
   return null;
 }
@@ -90,7 +90,13 @@ export const infoRequest = () => message(CMD.INFO);
 export const getRequest = () => message(CMD.GET);
 export const setRequest = (cfg) => message(CMD.SET, pack7(cfg));
 export const saveRequest = () => message(CMD.SAVE);
-export const slotStoreRequest = (n) => message(CMD.SLOT_STORE, [n]);
+/** Characters of a preset's display name: what the screen's detail line shows whole (6 pixels each from x = 4). */
+export const NAME_MAX = 20;
+/** A text as the device shows it: capitals and the characters of its 5x7 font (32-95), at most NAME_MAX of them. */
+export const displayName = (text) => [...String(text).toUpperCase()].map((ch) => (ch.codePointAt(0) >= 32 && ch.codePointAt(0) <= 95 ? ch : '?')).join('').trim().slice(0, NAME_MAX);
+/** The name a preset has on the screen: its own display name, else one made from its name ("(draft)" dropped). */
+export const presetDisplayName = (p) => displayName(p.display || '') || displayName(String(p.name).replace(' (draft)', '').replace('-like modes', ' modes'));
+export const slotStoreRequest = (n, name = '') => message(CMD.SLOT_STORE, [n, ...[...displayName(name)].map((ch) => ch.charCodeAt(0))]);
 export const slotLoadRequest = (n) => message(CMD.SLOT_LOAD, [n]);
 export const slotsRequest = () => message(CMD.SLOTS);
 export const resetRequest = (erase = false) => message(CMD.RESET, erase ? [1] : []);
@@ -114,7 +120,7 @@ export function parseReply(msg) {
     for (const b of data.slice(1, 6)) addr = addr * 128 + b;
     return { cmd, status: data[0], addr, data: data[0] === 0 ? unpack7(Uint8Array.from(data.slice(6))) : new Uint8Array(0) };
   }
-  if (cmd === CMD.SLOTS) return { cmd, status: data[0], used: [0, 1, 2, 3].map((i) => !!((data[1] >> i) & 1)) };
+  if (cmd === CMD.SLOTS) return { cmd, status: data[0], used: [0, 1, 2, 3].map((i) => !!((data[1] >> i) & 1)), names: [0, 1, 2, 3].map((i) => String.fromCharCode(...data.slice(2 + NAME_MAX * i, 2 + NAME_MAX * (i + 1)).filter((c) => c))) };
   if ([CMD.SET, CMD.SAVE, CMD.RESET, CMD.SLOT_STORE, CMD.SLOT_LOAD].includes(cmd)) {
     const r = { cmd, status: data[0], status_text: STATUS[data[0]] ?? '?' };
     if (cmd === CMD.SET && data[0] === 2) r.offset = data[1] | (data[2] << 7);
@@ -187,7 +193,8 @@ export class Mk3 {
   save() { return this.request(saveRequest(), CMD.SAVE); }
   reset(erase = false) { return this.request(resetRequest(erase), CMD.RESET); }
   async slots() { return (await this.request(slotsRequest(), CMD.SLOTS)).used; }
-  slotStore(n) { return this.request(slotStoreRequest(n), CMD.SLOT_STORE); }
+  async slotNames() { return (await this.request(slotsRequest(), CMD.SLOTS)).names; }
+  slotStore(n, name = '') { return this.request(slotStoreRequest(n, name), CMD.SLOT_STORE); }
   slotLoad(n) { return this.request(slotLoadRequest(n), CMD.SLOT_LOAD); }
 }
 

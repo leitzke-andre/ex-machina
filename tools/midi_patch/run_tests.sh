@@ -8,7 +8,7 @@ STOCK="$1"; WORK="${2:-$(mktemp -d)}"; mkdir -p "$WORK"; HERE="$(cd "$(dirname "
 "$PY" "$HERE/build_patch.py" "$STOCK" "$WORK/patched.bin"
 "$PY" "$HERE/build_patch.py" "$STOCK" "$WORK/stage1.bin" --stage 1
 "$PY" "$HERE/build_patch.py" "$STOCK" "$WORK/stage2.bin" --stage 2
-for t in test_translate test_patch test_features test_modes test_phase2 test_display_race test_config test_mmk3_config test_enumeration test_pad_pipeline test_real_pads test_real_controls stack_depth; do
+for t in test_translate test_patch test_features test_modes test_phase2 test_phase3 test_phase4 test_phase5 test_display_race test_config test_mmk3_config test_enumeration test_pad_pipeline test_real_pads test_real_controls stack_depth; do
   echo "== $t"; "$PY" "$HERE/$t.py" "$WORK/patched.bin" "$WORK/data_init.bin" | tail -3
 done
 echo "== test_led_race (random interleavings of an LED burst with the stock main loop)"
