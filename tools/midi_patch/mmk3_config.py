@@ -350,7 +350,7 @@ def _maschine_modes():
     """NI's own pad modes on the device itself, with feedback on the screen (docs/native-features.md): Pad Mode = the drum layout (the configured
     pad notes), Keyboard = chromatic from C3 on pad 1, Fixed Vel (every note at the fixed velocity), Shift + Fixed Vel = 16 Velocities, Shift + Volume /
     Swing = next / previous velocity curve (kept across power cycles), Shift + Mute = panic, the arrows transpose by a semitone (an octave with Shift);
-    Shift + Keyboard / Pad Mode = next / previous scale, Chords = chord mode, Shift + Chords / Step = next / previous chord type, Pitch / Mod / Perform = strip
+    Shift + Keyboard / Pad Mode = next / previous scale, Chords = chord mode, Shift + Chords / Select = next / previous chord type, Pitch / Mod / Perform = strip
     modes (pitch bend, mod wheel that holds its value with a bar, the configured CC, Notes = strum), Volume / Swing / Tempo = the encoder drives CC 7 / 10 / 11
     (press again to go back), Favorites / Browser = Program Change next / previous (Shift + Browser: back to 0), Project = the next preset slot, Tap = tap tempo (Shift: MIDI clock out), Note Repeat = arp /
     repeat (Shift: rate), Follow = arp pattern, Auto = octaves, Lock = latch (Shift: snapshot), Mute / Solo = mute / solo pads (Shift + Solo clears). Everything else is the default; the buttons used here no longer send their CC."""
@@ -405,7 +405,7 @@ def builtin_presets():
                         "pads 1-16 play notes 36-51 (General MIDI drums), encoder CC 7, touch strip CC 1, MIDI channel 1, local lighting on.",
          'cfg': default_cfg()},
         {'id': 'maschine-modes', 'name': 'Maschine-like modes',
-         'description': "The controller's own functions, with a message on the screen: Pad Mode (drum notes), Keyboard (C3 on pad 1) with 24 scales (Shift + Keyboard / Pad Mode), Chords with five chord types (Shift + Chords / Step), "
+         'description': "The controller's own functions, with a message on the screen: Pad Mode (drum notes), Keyboard (C3 on pad 1) with 24 scales (Shift + Keyboard / Pad Mode), Chords with five chord types (Shift + Chords / Select), "
                         "Fixed Vel, Shift + Fixed Vel = 16 Velocities, Shift + Volume / Swing = velocity curve (kept when unplugged), Shift + Mute = panic, the arrows transpose (Shift: an octave), "
                         "Pitch / Mod / Perform / Notes = strip modes, Volume / Swing / Tempo = what the encoder turns, Favorites / Browser = Program Change (Shift + Browser: back to 0), Project = the next preset slot on the device (in every preset), Tap = tap tempo (Shift: MIDI clock out), "
                         "Note Repeat = arp / repeat (Shift: rate) with Follow = pattern, Auto = octaves, Lock = latch, Mute / Solo = mute / solo pads. The buttons used here no longer send their CCs; everything else is as in Default.",

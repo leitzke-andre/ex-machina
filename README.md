@@ -25,11 +25,12 @@ The patch is tested without hardware in an emulator (Unicorn, running the real s
 | `flasher/` | self-contained DFU client for the NI bootloader (Python + WebUSB port), the guarded flash script, its tests and the protocol notes; could be its own project |
 | `tools/*.py`, `tools/*.sh` | the restore script (hash-gated NI image), USB / HID / chip probes, firmware carving |
 | `tools/ghidra/` | helper scripts used for the reverse engineering |
+| `manual/` | **the user manual**: playing, the button reference, presets and slots, the setup page, flashing and recovery, the command line, the MIDI reference |
 | `docs/` | design notes and the research: reverse-engineering findings, what each source confirmed, the SysEx protocol, hardware plan and results, the chip probe |
 | `proprietary/` | **not committed** (see `.gitignore`): NI's manual, updaters, installer image and the unmodified stock firmware, kept locally for the build and the restore path |
 | `CLAUDE.md` | working notes for the AI assistant used on this project (commands, constraints) |
 
-Start with `docs/midi-patch.md` (design and features), `docs/ui.md` (the browser tool) and `docs/remap-protocol.md` (SysEx protocol).
+To use the firmware, read the **[user manual](manual/README.md)**. For the design, start with `docs/midi-patch.md` (design and features), `docs/ui.md` (the browser tool) and `docs/remap-protocol.md` (SysEx protocol).
 
 ## Getting started
 ```
