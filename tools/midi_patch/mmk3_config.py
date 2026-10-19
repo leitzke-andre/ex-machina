@@ -41,7 +41,7 @@ ARP_RATES = ('1/4', '1/8', '1/8T', '1/16', '1/16T', '1/32', '1/32T')            
 SCALE_NAMES = ('chromatic', 'major', 'minor', 'harmonic minor', 'melodic minor', 'dorian', 'phrygian', 'lydian', 'mixolydian', 'locrian', 'major penta',
                'minor penta', 'blues', 'whole tone', 'diminished W-H', 'diminished H-W', 'hungarian minor', 'phryg dominant', 'double harmonic',
                'hirajoshi', 'in-sen', 'major blues', 'bebop dominant', 'neapolitan min')   # cfg.scale 0..23 (the masks are in build_patch.SCALES)
-CHORD_NAMES = ('triad', 'seventh', 'sus2', 'sus4', 'power')                                  # cfg.chord_type 0..4
+CHORD_NAMES = ('triad', 'seventh', 'sus2', 'sus4', 'power', 'minor', 'maj 9', 'maj 11')     # cfg.chord_type 0..7: 0-4 from the scale, 5-7 fixed shapes
 VEL_CURVES = ('soft3', 'soft2', 'soft1', 'linear', 'hard1', 'hard2', 'hard3', 'fixed', 'custom')   # cfg.vel_curve 0..8
 PRESS_MODES = ('poly aftertouch', 'channel pressure', 'control change', 'off')                      # cfg.press_mode 0..3
 LF_BTN_IDLE, LF_BTN_PRESS, LF_PAD_IDLE, LF_PAD_HIT, LF_STRIP = 1, 2, 4, 8, 16
@@ -98,7 +98,7 @@ RANGES = {
     'btn_mode': (0, 2, False), 'led_flags': (0, 31, False), 'btn_led_idle': (0, 127, False), 'btn_led_on': (0, 127, False),
     'pad_colour': (0, 17, False), 'strip_colour': (0, 17, False),
     'vel_curve': (0, 8, False), 'fixvel': (1, 127, False), 'keys_root': (0, 127, False), 'press_mode': (0, 3, False), 'press_cc': (0, 127, False),
-    'btn_act2': (0, ACT_LAST, False), 'btn_cc2': (0, 127, True), 'scale': (0, 23, False), 'chord_type': (0, 4, False), 'enc_tgt_cc': (0, 127, True),
+    'btn_act2': (0, ACT_LAST, False), 'btn_cc2': (0, 127, True), 'scale': (0, 23, False), 'chord_type': (0, len(CHORD_NAMES) - 1, False), 'enc_tgt_cc': (0, 127, True),
     'arp_type': (0, 5, False), 'arp_rate': (0, 6, False), 'arp_oct': (1, 4, False), 'tempo': (0, 255, False),
     'btn_mode_ovr': (0, 255, False), 'enc_pages': (1, 8, False), 'enc_page_step': (1, 32, False), 'enc_accel': (0, 3, False),
 }
@@ -405,7 +405,7 @@ def builtin_presets():
                         "pads 1-16 play notes 36-51 (General MIDI drums), encoder CC 7, touch strip CC 1, MIDI channel 1, local lighting on.",
          'cfg': default_cfg()},
         {'id': 'maschine-modes', 'name': 'Maschine-like modes',
-         'description': "The controller's own functions, with a message on the screen: Pad Mode (drum notes), Keyboard (C3 on pad 1) with 24 scales (Shift + Keyboard / Pad Mode), Chords with five chord types (Shift + Chords / Select), "
+         'description': "The controller's own functions, with a message on the screen: Pad Mode (drum notes), Keyboard (C3 on pad 1) with 24 scales (Shift + Keyboard / Pad Mode), Chords with eight chord types (Shift + Chords / Select), "
                         "Fixed Vel, Shift + Fixed Vel = 16 Velocities, Shift + Volume / Swing = velocity curve (kept when unplugged), Shift + Mute = panic, the arrows transpose (Shift: an octave), "
                         "Pitch / Mod / Perform / Notes = strip modes, Volume / Swing / Tempo = what the encoder turns, Favorites / Browser = Program Change (Shift + Browser: back to 0), Project = the next preset slot on the device (in every preset), Tap = tap tempo (Shift: MIDI clock out), "
                         "Note Repeat = arp / repeat (Shift: rate) with Follow = pattern, Auto = octaves, Lock = latch, Mute / Solo = mute / solo pads. The buttons used here no longer send their CCs; everything else is as in Default.",

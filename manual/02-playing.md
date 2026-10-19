@@ -31,7 +31,21 @@ The mode button stays lit while its mode is on. A note always ends with the note
 - **Shift + Keyboard** / **Shift + Pad Mode**: next / previous scale (from Drums mode this switches to Keyboard). 24 scales: chromatic, major, minor,
   harmonic minor, melodic minor, dorian, phrygian, lydian, mixolydian, locrian, major and minor pentatonic, blues, whole tone, both diminished scales,
   hungarian minor, phrygian dominant, double harmonic, hirajoshi, in-sen, major blues, bebop dominant, neapolitan minor.
-- **Shift + Chords** / **Shift + Select**: next / previous chord type: triad, seventh, sus2, sus4, power. On the chromatic scale, chords are built on the major scale.
+- **Shift + Chords** / **Shift + Select**: next / previous chord type. On the chromatic scale, chords are built on the major scale.
+
+  | Type | Built | Pad 1 / pad 2 in C major |
+  |---|---|---|
+  | triad | from the scale: notes 1, 3, 5 of the scale from the pad's note | C E G / D F A |
+  | seventh | from the scale: 1, 3, 5, 7 | C E G B / D F A C |
+  | sus2 | from the scale: 1, 2, 5 | C D G / D E A |
+  | sus4 | from the scale: 1, 4, 5 | C F G / D G A |
+  | power | from the scale: 1, 5 | C G / D A |
+  | minor | fixed shape: root, minor third, fifth | C Eb G / D F A |
+  | maj 9 | fixed shape: 1 3 5 7 9 with the major seventh | C E G B D / D F# A C# E |
+  | maj 11 | fixed shape: 1 3 5 7 9 11 | C E G B D F / D F# A C# E G |
+
+  The first five follow the scale, so their quality changes from pad to pad (a major scale gives major and minor chords). The fixed shapes play
+  the same chord quality on every pad, starting from the pad's scale note.
 
 ### Velocity
 - **Fixed Vel**: every note at one velocity (127 unless set otherwise). Screen: `FIXED VEL / ON 127`.

@@ -1,4 +1,4 @@
-"""Phase 2 of the controller's own functions in the emulator: scales and chords (all 24 scales and 5 chord types against an independent model), the touch-strip
+"""Phase 2 of the controller's own functions in the emulator: scales and chords (all 24 scales and 8 chord types against an independent model), the touch-strip
 modes (pitch bend, mod wheel with the bar on the strip LEDs), the encoder targets, Program Change, and their screen messages.
 Usage: test_phase2.py <patched.bin> <data_init.bin>"""
 import os, struct, sys
@@ -51,10 +51,12 @@ def led(d): return d.led()
 SEM = [sorted(s) for s in bp.SCALE_SEMITONES]
 def degree(scale, deg):
     s = SEM[scale]; return 12 * (deg // len(s)) + s[deg % len(s)]
-CHORDS = [(0, 2, 4), (0, 2, 4, 6), (0, 1, 4), (0, 3, 4), (0, 4)]
+CHORDS = [(0, 2, 4), (0, 2, 4, 6), (0, 1, 4), (0, 3, 4), (0, 4)]                 # types 0-4: scale degrees stacked on the pad's degree
+SHAPES = {5: (0, 3, 7), 6: (0, 4, 7, 11, 14), 7: (0, 4, 7, 11, 14, 17)}            # types 5-7: minor, maj 9, maj 11 in semitones on the pad's scale note
 def keys_note(scale, pad, root=60, tr=0): return min(127, max(0, root + tr + degree(scale, pad - 1)))
 def chord_notes(scale, ctype, pad, root=60, tr=0):
     sc = 1 if scale == 0 else scale                                     # chords on the chromatic scale are built on the major scale
+    if ctype in SHAPES: return [min(127, max(0, root + tr + degree(sc, pad - 1) + o)) for o in SHAPES[ctype]]
     return [min(127, max(0, root + tr + degree(sc, pad - 1 + o))) for o in CHORDS[ctype]]
 
 check('the scale masks in the image are the ones of the model: 24 scales, each starting on the root', all(m & 1 for m in bp.SCALES) and len(bp.SCALES) == 24
@@ -94,19 +96,28 @@ check('Chords mode on the chromatic scale (harmonised on major): pad 1 = C E G, 
 check('releasing a chord pad releases every note of it', lift(d, 1), [NOFF(60), NOFF(64), NOFF(67)]); lift(d, 2); lift(d, 8)
 d = Dev(); tap(d, 'Chords'); wrong = []
 for sc in range(24):
-    for ct in range(5):
+    for ct in range(8):
         d3 = Dev(cfg(scale=sc, chord_type=ct)); tap(d3, 'Chords')
         for pad in (1, 7, 16):
             got = [p[2] for p in hit(d3, pad)]; lift(d3, pad)
             if got != chord_notes(sc, ct, pad): wrong.append((sc, ct, pad, got))
-check('all 24 scales x 5 chord types x pads 1, 7, 16 (started from the config): the notes of the model', wrong, [])
+check('all 24 scales x 8 chord types x pads 1, 7, 16 (started from the config): the notes of the model', wrong, [])
+d = Dev(cfg(scale=2, chord_type=5)); tap(d, 'Chords')
+check('minor is a fixed shape on the scale note, whatever the scale: in C minor pad 3 (Eb) = Eb Gb Bb, pad 1 = C Eb G',
+      [[p[2] for p in hit(d, n)] for n in (3, 1)], [[63, 66, 70], [60, 63, 67]]); lift(d, 3); lift(d, 1)
+d = Dev(cfg(chord_type=6)); tap(d, 'Chords')
+check('maj 9 on the chromatic scale (the major scale\'s notes): pad 2 (D) = D F# A C# E', [p[2] for p in hit(d, 2)], [62, 66, 69, 73, 76]); lift(d, 2)
+d = Dev(cfg(chord_type=7, keys_root=120)); tap(d, 'Chords')
+check('maj 11 near the top: notes past 127 are held at 127 (root 120: 120 124 127 127 127 127)', [p[2] for p in hit(d, 1)], [120, 124, 127, 127, 127, 127])
+check('... and every one of them is released', len(lift(d, 1)), 6)
 d = Dev(); tap(d, 'Chords'); wrong = []
 types = []
-for k in range(6):
+for k in range(9):
     shift_tap(d, 'Chords'); types.append([p[2] for p in hit(d, 1)]); lift(d, 1)
-check('Shift + Chords steps the chord type: seventh, sus2, sus4, power, triad (wraps), seventh', types, [[60, 64, 67, 71], [60, 62, 67], [60, 65, 67], [60, 67], [60, 64, 67], [60, 64, 67, 71]])
+check('Shift + Chords steps the chord type: seventh, sus2, sus4, power, minor, maj 9, maj 11, triad (wraps), seventh', types,
+      [[60, 64, 67, 71], [60, 62, 67], [60, 65, 67], [60, 67], [60, 63, 67], [60, 64, 67, 71, 74], [60, 64, 67, 71, 74, 77], [60, 64, 67], [60, 64, 67, 71]])
 shift_tap(d, 'Select'); shift_tap(d, 'Select')
-check('Shift + Select steps back (seventh -> triad -> power)', [p[2] for p in hit(d, 1)], [60, 67]); lift(d, 1)
+check('Shift + Select steps back (seventh -> triad -> maj 11)', [p[2] for p in hit(d, 1)], [60, 64, 67, 71, 74, 77]); lift(d, 1)
 d = Dev(cfg(chord_type=1)); tap(d, 'Chords')
 ev21 = [(p, 1, 3000) for p in range(16)] + [(p, 1, 3000) for p in range(5)]
 out = d.translate(report2(ev21))
@@ -114,6 +125,12 @@ sent = [pk for b in d.sent for pk in [tuple(b[k:k + 4]) for k in range(0, len(b)
 check('a report of 21 chord hits (16 new pads + 5 retriggers, seventh chords): 16 x 4 Note On + 5 x (4 Note Off + 4 Note On) = 104 packets, all delivered in order',
       (len(sent), len(d.sent) >= 1, sum(1 for pk in sent if pk[0] == 8), sum(1 for pk in sent if pk[0] == 9)), (104, True, 20, 84))
 check('... every held pad remembers its chord: lifting all of them sends 16 x 4 Note Offs', sum(len(lift(d, n)) for n in range(1, 17)), 64)
+d = Dev(cfg(chord_type=7)); tap(d, 'Chords')
+out = d.translate(report2(ev21))
+sent = [pk for b in d.sent for pk in [tuple(b[k:k + 4]) for k in range(0, len(b), 4)]]
+check('the worst case, 21 maj 11 hits in one report (16 new pads + 5 retriggers): 16 x 6 Note On + 5 x (6 Note Off + 6 Note On) = 156 packets, all delivered',
+      (len(sent), sum(1 for pk in sent if pk[0] == 8), sum(1 for pk in sent if pk[0] == 9)), (156, 30, 126))
+check('... and lifting all 16 pads sends 16 x 6 Note Offs', sum(len(lift(d, n)) for n in range(1, 17)), 96)
 d = Dev(); tap(d, 'Chords'); hit(d, 1)
 check('pressure on a chord pad goes to its root note (poly aftertouch)', d.translate(report2([(PADIDX[1], 4, 2000)])), [(0x0A, 0xA0, 60, 62)])
 lift(d, 1)
@@ -193,6 +210,8 @@ show('SCALE', 'HARMONIC MINOR  C3', lambda: shift_tap(d, 'Keyboard'))
 show('SCALE', 'MINOR  C3', lambda: shift_tap(d, 'Pad Mode'))
 show('CHORDS', 'TRIAD  C3', lambda: tap(d, 'Chords'))
 show('CHORD TYPE', 'SEVENTH', lambda: shift_tap(d, 'Chords'))
+for _t in ('SUS2', 'SUS4', 'POWER', 'MINOR', 'MAJ 9'): shift_tap(d, 'Chords')
+show('CHORD TYPE', 'MAJ 11', lambda: shift_tap(d, 'Chords'))
 show('STRIP', 'PITCH BEND', lambda: tap(d, 'Pitch'))
 show('STRIP', 'MOD WHEEL', lambda: tap(d, 'Mod'))
 show('STRIP', 'CONFIGURED CC', lambda: tap(d, 'Perform'))

@@ -65,7 +65,7 @@ for name, vals in (('channel', (16, 255)), ('pad_note', (128, 200)), ('btn_cc', 
                    ('strip_cc', (128, 200)), ('vel_shift', (0, 9, 255)), ('led_channel', (16,)), ('pad_led', (80, 100, 254)), ('enc_mode', (3,)),
                    ('flags', (2,)), ('sens', (101, 200)), ('enc_init', (128,)), ('btn_mode', (3,)), ('led_flags', (32, 255)), ('btn_led_idle', (128,)),
                    ('btn_led_on', (200,)), ('pad_colour', (18, 255)), ('strip_colour', (18,)), ('vel_curve', (9, 255)), ('fixvel', (0, 128)),
-                   ('keys_root', (128,)), ('press_mode', (4,)), ('press_cc', (128,)), ('scale', (24, 255)), ('chord_type', (5,)), ('enc_tgt_cc', (128, 254)), ('arp_type', (6, 255)), ('arp_rate', (7,)), ('arp_oct', (0, 5)), ('btn_act2', (mc.ACT_LAST + 1, 255)), ('enc_pages', (0, 9)), ('enc_page_step', (0, 33)), ('enc_accel', (4,)), ('btn_cc2', (128, 254))):
+                   ('keys_root', (128,)), ('press_mode', (4,)), ('press_cc', (128,)), ('scale', (24, 255)), ('chord_type', (8, 255)), ('enc_tgt_cc', (128, 254)), ('arp_type', (6, 255)), ('arp_rate', (7,)), ('arp_oct', (0, 5)), ('btn_act2', (mc.ACT_LAST + 1, 255)), ('enc_pages', (0, 9)), ('enc_page_step', (0, 33)), ('enc_accel', (4,)), ('btn_cc2', (128, 254))):
     for v in vals: bad_cases.append((f'{name}={v}', mutate(name, 5 if F[name][1] > 5 else 0, v)))
 bad_cases.append(('magic', b'XMK3' + base[4:]))
 d = Dev(); before = mc.parse_reply(d.ask(mc.get_request())[0])['cfg']

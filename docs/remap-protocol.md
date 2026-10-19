@@ -53,7 +53,7 @@ Status: 4 empty slot (SLOT LOAD). 0 ok, 1 wrong length (the unpacked config is n
 | 154 | 48 | btn_act2 | the **shifted layer**: what each button does while a *Shift* button is held (6 = none: the button keeps its normal action) |
 | 202 | 48 | btn_cc2 | parameter of the shifted action (0xFF = none) |
 | 250 | 1 | scale | 0..23, the scale Keyboard and Chords mode start with (0 = chromatic, 1 major, 2 minor, ... `mmk3_config.SCALE_NAMES`; the masks are `build_patch.SCALES`) |
-| 251 | 1 | chord_type | 0..4: triad, seventh, sus2, sus4, power |
+| 251 | 1 | chord_type | 0..7: triad, seventh, sus2, sus4, power (stacked from the scale on the pad's degree), minor, maj 9, maj 11 (fixed shapes in semitones on the pad's scale note: 0 3 7 / 0 4 7 11 14 / 0 4 7 11 14 17) |
 | 252 | 3 | enc_tgt_cc | the CCs of the encoder targets 1..3 (default 7, 10, 11; 0xFF = none) |
 | 255 | 1 | arp_type | 0..5: repeat (every held note at once, NI's Note Repeat), up, down, up-down, played, random |
 | 256 | 1 | arp_rate | 0..6: 1/4, 1/8, 1/8T, 1/16, 1/16T, 1/32, 1/32T (24, 12, 8, 6, 4, 3, 2 clock pulses per step) |

@@ -138,7 +138,7 @@ TEXTS = {
     **{f'T_CURVE{i}': n for i, n in enumerate(['SOFT 3', 'SOFT 2', 'SOFT 1', 'LINEAR', 'HARD 1', 'HARD 2', 'HARD 3', 'FIXED', 'CUSTOM'])},
     'T_CHORDS': 'CHORDS', 'T_SCALE': 'SCALE', 'T_CHORD': 'CHORD TYPE', 'T_ENCODER': 'ENCODER', 'T_STRIP': 'STRIP', 'T_PITCH': 'PITCH BEND', 'T_MOD': 'MOD WHEEL',
     'T_NORMAL': 'CONFIGURED CC', 'T_PROGRAM': 'PROGRAM', 'T_PC': 'PC', 'T_VALUE': 'VALUE', 'T_CC': 'CC',
-    'T_TRIAD': 'TRIAD', 'T_SEVENTH': 'SEVENTH', 'T_SUS2': 'SUS2', 'T_SUS4': 'SUS4', 'T_POWER': 'POWER',
+    'T_TRIAD': 'TRIAD', 'T_SEVENTH': 'SEVENTH', 'T_SUS2': 'SUS2', 'T_SUS4': 'SUS4', 'T_POWER': 'POWER', 'T_MINOR': 'MINOR', 'T_MAJ9': 'MAJ 9', 'T_MAJ11': 'MAJ 11',
     **{f'T_SCALE{i}': n.upper() for i, n in enumerate(SCALE_NAMES)},
     'T_PAGE': 'PAGE', 'T_ENCPAGE': 'ENC PAGE', 'T_DFU': 'DFU MODE', 'T_FLASHTOLEAVE': 'FLASH TO LEAVE', 'T_STEP': 'STEP', 'T_TRK': 'TRK', 'T_PAT': 'PAT', 'T_RUN': 'RUN', 'T_STOP': 'STOP', 'T_TRACK': 'TRACK', 'T_PATTERN': 'PATTERN', 'T_CLEAR': 'CLEAR', 'T_PATTERNS': 'PATTERNS', 'T_CHANNEL': 'CHANNEL', 'T_SLOT': 'SLOT', 'T_LOADED': 'LOADED', 'T_SAVED': 'SAVED', 'T_EMPTY': 'EMPTY', 'T_ERROR': 'FLASH ERROR', 'T_EXNAME': _FW_NAME.upper(), 'T_VER': f'V{FW_VERSION}', 'T_M0': 'DRUMS', 'T_M1': 'KEYS', 'T_M2': 'CHORDS', 'T_CH': 'CH', 'T_CLK': 'CLK', 'T_SEQ': 'SEQ',
     'T_ARP': 'ARP', 'T_ARPTYPE': 'ARP TYPE', 'T_RATE': 'RATE', 'T_OCT': 'OCTAVES', 'T_LATCH': 'LATCH', 'T_TEMPO': 'TEMPO', 'T_BPM': 'BPM', 'T_CLOCK': 'CLOCK OUT',

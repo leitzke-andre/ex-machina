@@ -56,7 +56,7 @@ enum { ACT_CC, ACT_NOTE, ACT_START, ACT_CONT, ACT_STOP, ACT_MMC, ACT_NONE,
        ACT_SHIFT,           /* hold: buttons use their second (shifted) action, btn_act2 / btn_cc2 */
        ACT_SCALE,           /* select the scale of Keyboard / Chords mode: parameter 0 = next, 1 = previous (switches to Keyboard mode from Group mode) */
        ACT_CHORDS,          /* Chords mode: every pad plays the chord on its scale degree */
-       ACT_CHORDTYPE,       /* select the chord type (triad, seventh, sus2, sus4, power): parameter 0 = next, 1 = previous */
+       ACT_CHORDTYPE,       /* select the chord type (triad, seventh, sus2, sus4, power, minor, maj 9, maj 11): parameter 0 = next, 1 = previous */
        ACT_STRIP,           /* touch strip mode: parameter 0 = the configured CC, 1 = pitch bend (springs back), 2 = mod wheel CC 1 that holds its value, shown as a bar */
        ACT_ENCTGT,          /* the encoder drives target 1..3 (parameter 0..2: enc_tgt_cc) instead of enc_cc; the same button again goes back */
        ACT_PROGRAM,         /* Program Change: parameter 0 = next, 1 = previous, 2 = back to program 0 */
@@ -121,7 +121,7 @@ struct cfg {                /* lives in flash at CFG_ADDR, editable offline */
     u8 btn_act2[48];        /* the shifted layer: ACT_* per button id while a Shift button (ACT_SHIFT) is held; ACT_NONE = the button keeps its normal action */
     u8 btn_cc2[48];
     u8 scale;               /* 0..23: the scale Keyboard and Chords mode start with (SCALES; 0 = chromatic) */
-    u8 chord_type;          /* 0..4: triad, seventh, sus2, sus4, power */
+    u8 chord_type;          /* 0..7: triad, seventh, sus2, sus4, power (built from the scale), minor, maj 9, maj 11 (fixed shapes on the pad's scale note) */
     u8 enc_tgt_cc[3];       /* CC of the encoder targets 1..3 (ACT_ENCTGT); 0xff = none */
     u8 arp_type;            /* 0..5 repeat, up, down, up-down, played, random */
     u8 arp_rate;            /* 0..6: 1/4, 1/8, 1/8T, 1/16, 1/16T, 1/32, 1/32T */
@@ -143,6 +143,9 @@ _Static_assert(sizeof(struct cfg) == 274, "cfg layout is mirrored in mmk3_config
 #define FONT_ADDR 0x0800D940u                            /* 5 x 7 font, ASCII 32..95, 5 column bytes each (bit 0 = top row) */
 #define TXT_ADDR 0x0800DA80u                             /* the texts of the display messages: 16 bytes each, NUL padded (build_patch.py TEXTS) */
 #define SCALE_N 24u
+#define CHORD_N 8u                                  /* chord types: 0..4 built from the scale, CHORD_FIXED.. fixed shapes */
+#define CHORD_FIXED 5u
+#define CHORD_MAX 6u                                /* the most notes a chord pad plays (maj 11) */
 #define HW_ADDR 0x0800E700                        /* the board's wiring for hal.c (build_patch.py hw_blob: button matrix) */
 #define LEDTAB_ADDR 0x0800E780                    /* the LED colour tables for hal.c (build_patch.py led_tables, from the user's stock image) */
 #define SCALES ((const u16 *)0x0800E6C0)                 /* 12-bit masks of the scales, bit n = semitone n (build_patch.py SCALES) */
@@ -194,7 +197,7 @@ struct state {              /* RAM above the firmware's stack, zeroed by mmk3_in
     u8 psent;               /* the last channel pressure / CC pressure value sent is not 0 (to be zeroed when the last pad lets go) */
     u8 panic;               /* All Sound Off / All Notes Off messages still to send (of 32) */
     u8 log_req;             /* settings that changed with the buttons and are to be appended to the settings log by the main loop: bit 0 velocity curve, bit 1 MIDI channel */
-    u8 cn[16][4];           /* the notes each held pad started (a chord has up to 4), for the Note Offs and the pressure (cn[pad][0]) */
+    u8 cn[16][CHORD_MAX];   /* the notes each held pad started (a chord has up to CHORD_MAX), for the Note Offs and the pressure (cn[pad][0]) */
     u8 cnn[16];             /* how many */
     u8 scale, ctype;        /* the scale and chord type in use (start from the config) */
     u8 strip_mode;          /* 0 the configured CC, 1 pitch bend, 2 mod wheel with a bar */
@@ -375,7 +378,7 @@ static u8 strip_code(const struct cfg *c) { return (u8)(((c->strip_colour ? c->s
 enum { T_PADMODE, T_KEYBOARD, T_FIXVEL, T_VEL16, T_VELOCITY, T_TRANSPOSE, T_PANIC, T_GROUP, T_ON, T_OFF, T_ALLOFF, T_BASE, T_ROOT,
        T_NOTE0, T_NOTE1, T_NOTE2, T_NOTE3, T_NOTE4, T_NOTE5, T_NOTE6, T_NOTE7, T_NOTE8, T_NOTE9, T_NOTE10, T_NOTE11,
        T_CURVE0, T_CURVE1, T_CURVE2, T_CURVE3, T_CURVE4, T_CURVE5, T_CURVE6, T_CURVE7, T_CURVE8,
-       T_CHORDS, T_SCALE, T_CHORD, T_ENCODER, T_STRIP, T_PITCH, T_MOD, T_NORMAL, T_PROGRAM, T_PC, T_VALUE, T_CC, T_TRIAD, T_SEVENTH, T_SUS2, T_SUS4, T_POWER,
+       T_CHORDS, T_SCALE, T_CHORD, T_ENCODER, T_STRIP, T_PITCH, T_MOD, T_NORMAL, T_PROGRAM, T_PC, T_VALUE, T_CC, T_TRIAD, T_SEVENTH, T_SUS2, T_SUS4, T_POWER, T_MINOR, T_MAJ9, T_MAJ11,
        T_SCALE0, T_SCALE1, T_SCALE2, T_SCALE3, T_SCALE4, T_SCALE5, T_SCALE6, T_SCALE7, T_SCALE8, T_SCALE9, T_SCALE10, T_SCALE11,
        T_SCALE12, T_SCALE13, T_SCALE14, T_SCALE15, T_SCALE16, T_SCALE17, T_SCALE18, T_SCALE19, T_SCALE20, T_SCALE21, T_SCALE22, T_SCALE23,
        T_PAGE, T_ENCPAGE, T_DFU, T_FLASHTOLEAVE, T_STEP, T_TRK, T_PAT, T_RUN, T_STOP, T_TRACK, T_PATTERN, T_CLEAR, T_PATTERNS, T_CHANNEL, T_SLOT, T_LOADED, T_SAVED, T_EMPTY, T_ERROR, T_EXNAME, T_VER, T_M0, T_M1, T_M2, T_CH, T_CLK, T_SEQ,
@@ -548,6 +551,13 @@ __attribute__((optnone, noinline)) static u32 chord_def(u32 type)               
     if (type == 3) return 0x4303;                          /* sus4: 1 4 5 */
     if (type == 4) return 0x402;                           /* power: 1 5 */
     return 0x4203;                                         /* triad: 1 3 5 */
+}
+/* The fixed shapes (types 5..7): count in bits 0-3, then the semitones above the root of the 2nd..6th note in 5-bit steps. */
+__attribute__((optnone, noinline)) static u32 chord_shape(u32 type)
+{
+    if (type == 6) return 5u | (4u << 4) | (7u << 9) | (11u << 14) | (14u << 19);                  /* maj 9: 1 3 5 7 9 (major seventh) */
+    if (type == 7) return 6u | (4u << 4) | (7u << 9) | (11u << 14) | (14u << 19) | (17u << 24);    /* maj 11: 1 3 5 7 9 11 */
+    return 3u | (3u << 4) | (7u << 9);                                                             /* minor: 1 b3 5 */
 }
 static u8 clampnote(int n) { return (u8)(n < 0 ? 0 : n > 127 ? 127 : n); }
 
@@ -818,7 +828,7 @@ static void seq_pad(struct state *s, const struct cfg *c, u8 pad)
 }
 
 /* ---- the picture behind the messages ---- */
-/* The notes sounding now, from every source: the pads held (a chord pad has up to 4), what the arp, the sequencer and the strip have sounding. Bit n of nb[n >> 5]. */
+/* The notes sounding now, from every source: the pads held (a chord pad has up to CHORD_MAX), what the arp, the sequencer and the strip have sounding. Bit n of nb[n >> 5]. */
 static void note_set(u32 *nb, u32 n) { nb[n >> 5] |= 1u << (n & 31); }
 static void sounding(const struct state *s, const struct cfg *c, u32 *nb)
 {
@@ -915,7 +925,7 @@ static void mode_action(struct state *s, const struct cfg *c, u8 act, u8 par)
         s->scale = (u8)(par == 1 ? (s->scale ? s->scale - 1 : SCALE_N - 1) : (s->scale + 1 >= SCALE_N ? 0 : s->scale + 1));
         announce_scale(s, c);
     } else if (act == ACT_CHORDTYPE) {
-        s->ctype = (u8)(par == 1 ? (s->ctype ? s->ctype - 1 : 4) : (s->ctype >= 4 ? 0 : s->ctype + 1));
+        s->ctype = (u8)(par == 1 ? (s->ctype ? s->ctype - 1 : CHORD_N - 1) : (s->ctype + 1 >= CHORD_N ? 0 : s->ctype + 1));
         announce_chord(s);
     } else if (act == ACT_STRIP) {
         if (s->strum) { s->strum_off = s->strum; s->strum = 0; }
@@ -1035,13 +1045,20 @@ static void mode_action(struct state *s, const struct cfg *c, u8 act, u8 par)
 }
 
 
-/* The notes a pad plays now, into out[] (up to 4): its configured note (Group), root + scale degree (Keyboard), the chord on that degree (Chords), or one
+/* The notes a pad plays now, into out[] (up to CHORD_MAX): its configured note (Group), root + scale degree (Keyboard), the chord on that degree (Chords), or one
  * note for all pads (16 Velocities); transposed. Returns how many. */
 static u32 pad_notes_now(struct state *s, const struct cfg *c, u8 pad, u8 *out)
 {
     u32 k, n = 1, deg = padnum(pad);
     int root = c->keys_root + s->transpose;
     if (s->vel16) out[0] = clampnote(s->padmode ? root : c->pad_note[12] + s->transpose + 16 * s->page);
+    else if (s->padmode == 2 && s->ctype >= CHORD_FIXED) {  /* a fixed shape on the pad's scale note, whatever the scale */
+        u32 v = chord_shape(s->ctype);
+        int r = root + scale_note(scale_mask(s, 1), deg);
+        n = v & 15;
+        out[0] = clampnote(r);
+        for (k = 1; k < n; k++) out[k] = clampnote(r + (int)((v >> (4 + 5 * (k - 1))) & 31));
+    }
     else if (s->padmode == 2) {
         u32 v = chord_def(s->ctype), m = scale_mask(s, 1);
         n = v & 15;
@@ -1063,7 +1080,7 @@ static u8 hit_velocity(struct state *s, const struct cfg *c, u8 pad, u32 val)
 static u32 strum_notes(struct state *s, const struct cfg *c, u8 *out)
 {
     u32 n = 0, p, j, k;
-    u8 tmp[4];
+    u8 tmp[CHORD_MAX];
     for (p = 0; p < 16 && n < 16; p++) {
         if ((s->held >> p) & 1) { for (j = 0; j < s->cnn[p] && n < 16; j++) out[n++] = s->cn[p][j]; if (!s->cnn[p] && n < 16) out[n++] = s->cn[p][0]; }
     }
@@ -1114,7 +1131,7 @@ static u8 *button_event(struct state *s, const struct cfg *c, u8 *q, u8 act, u8 
     return act == ACT_MMC ? emit_mmc(q, par) : emit1(q, act == ACT_START ? 0xFA : act == ACT_CONT ? 0xFB : 0xFC);
 }
 
-/* The output buffer is handed to the stock ring whenever less than the worst case of the next item is left (a chord pad event is 8 packets);
+/* The output buffer is handed to the stock ring whenever less than the worst case of the next item is left (a chord pad event is up to 12 packets: CHORD_MAX Note Offs and Note Ons, 48 bytes);
  * the stock enqueue copies at once, and its return value is not used by the caller. */
 #define ROOM(n) do { if ((u32)(q - s->out) + (n) > sizeof s->out) { ENQUEUE(s->out, (u32)(q - s->out)); q = s->out; } } while (0)
 
@@ -1257,12 +1274,12 @@ static u32 translate_report(const u8 *buf, u32 len)
                 u16 bit;
                 if (!pad && !r[1] && !r[2]) break;
                 if (pad > 15) continue;
-                ROOM(48);
+                ROOM(8 * CHORD_MAX);                     /* a retriggered chord: its Note Offs and Note Ons */
                 pl = c->pad_led[pad];
                 bit = (u16)(1u << pad);
                 switch (type) {
                 case 0: case 1: {
-                    u8 nb[4], vel = hit_velocity(s, c, pad, val);
+                    u8 nb[CHORD_MAX], vel = hit_velocity(s, c, pad, val);
                     u32 cnt, j;
                     if (s->padmode == 3) { seq_pad(s, c, pad); dirty = 1; break; }       /* step mode: the pad is a step (or, with Select held, a track) */
                     if (s->padfn) {                              /* mute / solo edit: the hit toggles the pad */
@@ -1478,7 +1495,7 @@ static u32 cfg_check(const struct cfg *c)
         if (c->btn_act2[i] > ACT_LAST) return OFS(btn_act2) + i + 1;
     }
     if (c->scale >= SCALE_N) return OFS(scale) + 1;
-    if (c->chord_type > 4) return OFS(chord_type) + 1;
+    if (c->chord_type >= CHORD_N) return OFS(chord_type) + 1;
     for (i = 0; i < 3; i++) if (c->enc_tgt_cc[i] > 127 && c->enc_tgt_cc[i] != 0xFF) return OFS(enc_tgt_cc) + i + 1;
     if (c->arp_type > 5) return OFS(arp_type) + 1;
     if (c->arp_rate > 6) return OFS(arp_rate) + 1;
