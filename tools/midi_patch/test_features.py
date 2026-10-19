@@ -66,7 +66,7 @@ check('ACT_CONT: 0F FB on press only', (d.translate(report1([3])), d.translate(r
 check('ACT_NOTE: Note On (velocity 127) while pressed, Note Off on release, on the configured channel (3 here)',
       (d.translate(report1([4])), d.translate(report1())), ([(0x09, 0x92, 60, 127)], [(0x08, 0x82, 60, 0)]))
 check('ACT_NONE and an unassigned CC (0xFF): silent', (d.translate(report1([5])), d.translate(report1()), d.translate(report1([6])), d.translate(report1())), ([], [], [], []))
-check('ACT_CC still sends on the configured channel (button 0 = CC 38 on channel 3)', d.translate(report1([0])), [CC(38, 127, 2)])
+check('ACT_CC still sends on the configured channel (button 1 = CC 39 on channel 3)', d.translate(report1([1])), [CC(39, 127, 2)])
 
 # ---- local LEDs ---------------------------------------------------------------------------------------------------------------------
 PADCOL = IMG_CFG[O_PADCOL]
@@ -209,8 +209,8 @@ allmmc[O_LEDFLAGS] = 0
 ev21 = [(p, 1, 3000) for p in range(16)] + [(p, 1, 3000) for p in range(5)]          # 21 pad events: 16 first hits, then 5 retriggers
 d = Dev(allmmc); d.translate(report1())
 out = d.translate(report1(range(41)) + report2(ev21))
-check('worst case: all 41 buttons as MMC (82 packets, 328 B) and 21 pad events (16 Note On + 5 x Note Off/On) in one buffer: 108 packets, all delivered',
-      (len(out), len(d.sent[0])), (108, 432))
+check('worst case: every button as MMC (40 of them: Project always loads a slot; 80 packets, 320 B) and 21 pad events (16 Note On + 5 x Note Off/On) in one buffer: 106 packets, all delivered',
+      (len(out), len(d.sent[0])), (106, 424))
 sx0 = d.out_ptr + 512
 guard = bytes(d.mu.mem_read(sx0, 480))                              # sx[], led[] and base[] sit directly behind out[]
 d.translate(report2(ev21) * 3)                                      # every pad is held now: each event is a Note Off + a Note On (8 B)
@@ -221,6 +221,6 @@ d.translate(report2(ev21) * 5)
 check('five of them (840 B): all delivered in several pieces, nothing lost, nothing behind out[] is overwritten',
       (total(), len(d.sent) > 1, bytes(d.mu.mem_read(sx0, 480)) == guard), (840, True, True))
 d = Dev(allmmc); d.translate(report1())
-check('two report-1s in one buffer after a 328 B first one (the second releases everything: nothing to send): 82 packets',
-      (len(d.translate(report1(range(41)) + report1())), total()), (82, 328))
+check('two report-1s in one buffer after a 320 B first one (the second releases everything: nothing to send): 80 packets',
+      (len(d.translate(report1(range(41)) + report1())), total()), (80, 320))
 print('ALL PASS' if ok else 'SOME FAILED'); sys.exit(0 if ok else 1)

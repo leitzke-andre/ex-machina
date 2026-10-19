@@ -23,8 +23,9 @@ B = {n: i for i, n in enumerate(mc.BUTTON_NAMES)}
 PADIDX = {n: mc.PAD_LABEL.index(n) for n in range(1, 17)}
 PRESET = next(p['cfg'] for p in mc.builtin_presets() if p['id'] == 'maschine-modes')
 REAL_PRESET = PRESET
-PRESET = bytearray(PRESET)                                              # the tests of storing from the buttons: the preset plus Shift + Scene / Pattern / Events / Variation = store in slot 1-4
-for _k, _n in enumerate(('Scene', 'Pattern', 'Events', 'Variation')): PRESET[F['btn_act2'][0] + B[_n]] = mc.ACT_SLOT; PRESET[F['btn_cc2'][0] + B[_n]] = 4 + _k
+PRESET = bytearray(PRESET)                                              # the tests of the slot buttons: the preset plus Scene / Pattern / Events / Variation = load slot 1-4, with Shift = store in it
+for _k, _n in enumerate(('Scene', 'Pattern', 'Events', 'Variation')):
+    PRESET[F['btn_act'][0] + B[_n]] = mc.ACT_SLOT; PRESET[F['btn_cc'][0] + B[_n]] = _k; PRESET[F['btn_act2'][0] + B[_n]] = mc.ACT_SLOT; PRESET[F['btn_cc2'][0] + B[_n]] = 4 + _k
 PRESET = bytes(PRESET)
 NON = lambda n, v=93, ch=0: (0x09, 0x90 | ch, n, v)
 NOFF = lambda n, ch=0: (0x08, 0x80 | ch, n, 0)
@@ -175,15 +176,36 @@ x.tap('Pattern'); x.run(40); x.shift_tap('Events'); x.run(40)
 check('after loading a named slot, Shift + a slot button stores under that name', x.ask(mc.slots_request())['names'][2], 'RENAMED')
 x.tap('Variation'); sc.run(6, 10)
 check('an unnamed slot shows LOADED', sc.fb() == reference('SLOT 4', 'LOADED'), True)
-# the preset as shipped: no button stores (a Shift + slot button that stored overwrote slots by accident); Shift + the button loads, like the plain press
-x = T(DEFAULTS); x.d.send_sysex(mc.set_request(A)); [x.d.tick(0) for _ in range(5)]; x.ask(mc.slot_store_request(1, 'Mine'))
+# the preset as shipped: Project (top left, away from the pads) and Shift + Project load the next slot that holds a config; no button stores (a Shift +
+# slot button that stored overwrote slots by accident), and the middle buttons Scene / Pattern / Events / Variation are plain CCs again (too easy to hit while playing)
+def rp(**kw):
+    c = bytearray(REAL_PRESET)
+    for k, v in kw.items(): c[F[k][0]] = v
+    return bytes(c)
+check('Maschine-like modes: Project and Shift + Project = next slot, Shift + Browser = program 0, Scene / Pattern / Events / Variation send their CCs',
+      ([(REAL_PRESET[F['btn_act'][0] + B[n]], REAL_PRESET[F['btn_cc'][0] + B[n]]) for n in ('Project', 'Scene', 'Pattern', 'Events', 'Variation')],
+       (REAL_PRESET[F['btn_act2'][0] + B['Project']], REAL_PRESET[F['btn_cc2'][0] + B['Project']]), (REAL_PRESET[F['btn_act2'][0] + B['Browser']], REAL_PRESET[F['btn_cc2'][0] + B['Browser']])),
+      ([(mc.ACT_SLOT, 8)] + [(mc.ACT_CC, DEFAULTS[F['btn_cc'][0] + B[n]]) for n in ('Scene', 'Pattern', 'Events', 'Variation')], (mc.ACT_NONE, 0xFF), (mc.ACT_PROGRAM, 2)))
+x = T(DEFAULTS)
 x.d.send_sysex(mc.set_request(REAL_PRESET)); [x.d.tick(0) for _ in range(5)]
-n0 = len(x.d.flash.log); x.shift_tap('Pattern'); x.run(40)
-check('Maschine-like modes: Shift + Pattern loads slot 2 (and writes nothing to flash)', (x.cfg() == A, len(x.d.flash.log) - n0), (True, 0))
-x.d.send_sysex(mc.set_request(REAL_PRESET)); [x.d.tick(0) for _ in range(5)]
-x.tap('Pattern'); x.run(40)
-check('... and so does the plain press; slot 2 is still the stored config and nothing was written', (x.cfg() == A, x.ask(mc.slots_request())['names'][1], len(x.d.flash.log) - n0), (True, 'MINE', 0))
-check('no button of the shipped preset stores into a slot', [k for k in range(41) if REAL_PRESET[F['btn_act2'][0] + k] == mc.ACT_SLOT or (REAL_PRESET[F['btn_act'][0] + k] == mc.ACT_SLOT and REAL_PRESET[F['btn_cc'][0] + k] > 3)], [])
+sc = Screen(x.d); sc.settle(); x.tap('Project'); sc.run(6, 10)
+check('no slot holds a config: Project shows SLOT / EMPTY and changes nothing', (sc.fb() == reference('SLOT', 'EMPTY'), x.cfg() == REAL_PRESET), (True, True))
+for n, ch in ((0, 2), (2, 4), (3, 5)):                       # slots 1, 3, 4 hold the preset on channels 3, 5, 6; slot 2 is empty
+    x.d.send_sysex(mc.set_request(rp(channel=ch))); [x.d.tick(0) for _ in range(5)]; x.ask(mc.slot_store_request(n))
+x.d.send_sysex(mc.set_request(rp(channel=9))); [x.d.tick(0) for _ in range(5)]
+n0 = len(x.d.flash.log); seen = []
+for _ in range(5): x.tap('Project'); x.run(40); seen.append(x.cfg()[F['channel'][0]] + 1)
+check('a config from no slot: Project loads slot 1 first, then 3 and 4 (slot 2 is empty: skipped), then 1 again; nothing written to flash',
+      (seen, len(x.d.flash.log) - n0), ([3, 5, 6, 3, 5], 0))
+x.shift_tap('Project'); x.run(40)
+check('Shift + Project does the same (slot 3 -> 4)', x.cfg()[F['channel'][0]] + 1, 6)
+sc.settle(); x.tap('Project'); sc.run(6, 10)
+check('the screen shows the slot that was loaded (SLOT 1 / LOADED)', sc.fb() == reference('SLOT 1', 'LOADED'), True)
+x.ask(mc.slot_load_request(2)); x.tap('Project'); x.run(40)
+check('a slot made active by the host counts as the current one: slot 3 over SysEx, then Project -> slot 4', x.cfg()[F['channel'][0]] + 1, 6)
+x.ask(mc.save_request()); x = x.reboot(); x.tap('Project'); x.run(40)
+check('after a power cycle the current slot is found by its config: slot 4 saved as the power-up config, Project -> slot 1', x.cfg()[F['channel'][0]] + 1, 3)
+check('no button of the shipped preset stores into a slot', [k for k in range(41) if REAL_PRESET[F['btn_act2'][0] + k] == mc.ACT_SLOT and REAL_PRESET[F['btn_cc2'][0] + k] in range(4, 8) or (REAL_PRESET[F['btn_act'][0] + k] == mc.ACT_SLOT and REAL_PRESET[F['btn_cc'][0] + k] in range(4, 8))], [])
 # ---- the step sequencer --------------------------------------------------------------------------------------------------------------------------
 from dispsim import seq_grid
 PADLED = lambda x, n: x.led()[39 + PADIDX[n]]

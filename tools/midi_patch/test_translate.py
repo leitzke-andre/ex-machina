@@ -88,12 +88,12 @@ check('strip pos 200 -> CC1 = 127', call(mu, r1(enc=15, pos=200)), [cc(127, 1)])
 check('strip pos 100 -> CC1 = 63', call(mu, r1(enc=15, pos=100)), [cc(63, 1)])
 check('strip release sends nothing by default', call(mu, r1(enc=15, pos=0)), [])
 # every NI-assigned button against NI's built-in map (the Controller Editor's Map::Map; same numbers as the manual's diagram)
-NI_CC = {0: 38, 1: 39, 2: 40, 3: 44, 4: 46, 5: 48, 6: 45, 7: 47, 10: 49, 11: 50, 12: 51, 13: 52, 14: 34, 15: 35, 16: 36, 17: 37,
+NI_CC = {1: 39, 2: 40, 3: 44, 4: 46, 5: 48, 6: 45, 7: 47, 10: 49, 11: 50, 12: 51, 13: 52, 14: 34, 15: 35, 16: 36, 17: 37,
          18: 53, 19: 54, 20: 55, 21: 56, 23: 58, 26: 80, 27: 81, 28: 82, 29: 84, 30: 83, 31: 85, 32: 86, 33: 87,
          34: 88, 35: 89, 36: 90, 37: 91, 38: 92}
 m5 = session(); call(m5, r1())
 wrong = [(bid, n) for bid, n in NI_CC.items() if call(m5, r1(buttons=1 << bid)) != [cc(127, n)] or call(m5, r1()) != [cc(0, n)]]
-check(f'all {len(NI_CC)} CC buttons (everything NI assigns except Play and Stop, which are MIDI Start / Stop here) send their CC on press and 0 on release', wrong, [])
+check(f'all {len(NI_CC)} CC buttons (everything NI assigns except Play and Stop, which are MIDI Start / Stop here, and Project (CC 38), which always loads the next preset slot) send their CC on press and 0 on release', wrong, [])
 for mode, name, plus1, minus2 in ((0, 'relative-offset (65/63 around 64)', 65, 62), (2, 'relative two\'s complement (1/127)', 1, 126)):
     m2 = session(); m2.mem_write(0x0800CE00 + 89, bytes([mode])); call(m2, r1())
     check(f'encoder mode {name}: 1 click clockwise (counter 0 -> 1) -> {plus1}', call(m2, r1(enc=1)), [cc(plus1, 7)])

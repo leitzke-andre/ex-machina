@@ -85,7 +85,7 @@ const PARAM_CHOICES = {
   curve: [[0, 'Next curve'], [1, 'Previous curve']], scale: [[0, 'Next scale'], [1, 'Previous scale']], chordtype: [[0, 'Next type'], [1, 'Previous type']],
   strip: [[0, 'The configured CC'], [1, 'Pitch bend'], [2, 'Mod wheel (holds, bar)'], [3, 'Strum notes']],
   channel: [[0, 'Next channel'], [1, 'Previous channel']], seqrun: [[0, 'Start / stop'], [1, 'Restart']], seqpat: [[0, 'Next pattern'], [1, 'Previous pattern']], seqclear: [[0, 'The selected track'], [1, 'The whole pattern']],
-  slot: [[0, 'Load slot 1'], [1, 'Load slot 2'], [2, 'Load slot 3'], [3, 'Load slot 4'], [4, 'Store in slot 1'], [5, 'Store in slot 2'], [6, 'Store in slot 3'], [7, 'Store in slot 4']],
+  slot: [[0, 'Load slot 1'], [1, 'Load slot 2'], [2, 'Load slot 3'], [3, 'Load slot 4'], [4, 'Store in slot 1'], [5, 'Store in slot 2'], [6, 'Store in slot 3'], [7, 'Store in slot 4'], [8, 'Load the next slot']],
   arptype: [[0, 'Next pattern'], [1, 'Previous pattern']], rate: [[0, 'Next rate'], [1, 'Previous rate']], snap: [[0, 'Store, then recall'], [1, 'Store again']], enctgt: [[0, 'Target 1'], [1, 'Target 2'], [2, 'Target 3']], program: [[0, 'Next'], [1, 'Previous'], [2, 'Back to 0']],
   page: [[0, 'Next page'], [1, 'Previous page'], [2, 'Back to page 1']], encpage: [[0, 'Next page'], [1, 'Previous page'], [2, 'Back to page 1']],
 };
@@ -131,6 +131,10 @@ function buttonRow(id, layer) {
   hint.append(hintText, modeSel);
   for (const [v, t] of ACTIONS) sel.append(el('option', { value: v, text: v === 'none' && layer ? 'Same as without Shift' : t }));
   numWrap.append(num, mmc, curve, semi);
+  if (id === M.BTN_PROJECT) {                                                        // fixed in the firmware: always the next preset slot
+    for (const n of [sel, num, mmc, curve, semi, modeSel]) n.disabled = true;
+    sel.title = 'Project always loads the next preset slot (fixed in the firmware, in every preset)';
+  }
   const effective = () => (state.cfg[A] === 0 && state.cfg[C] === 0xff ? 'none' : D.ACTION_NAMES[state.cfg[A]]);
   const sync = () => {
     const act = effective(), p = state.cfg[C];
@@ -145,7 +149,8 @@ function buttonRow(id, layer) {
     if (!semi.hidden) { semi.value = p > 127 ? 0 : p - 64; semi.classList.remove('bad'); }
     modeSel.hidden = layer !== 0 || act !== 'cc' || id > 40;
     if (!modeSel.hidden) { const o = (state.cfg[MO] >> MS) & 3; modeSel.value = String(o - 1); }
-    hintText.textContent = act === 'note' && p <= 127 ? M.noteName(p) : act === 'cc' ? (p <= 127 ? `CC ${p}` : '') : act === 'mmc' ? 'F0 7F 7F 06 …' : act === 'none' ? '' : act === 'curve' ? 'message on the screen' : act === 'transpose' ? 'semitones; applies to the pads' : HINTS[act] ?? 'on press';
+    if (id === M.BTN_PROJECT) hintText.textContent = 'always: the next preset slot (fixed)';
+    else hintText.textContent = act === 'note' && p <= 127 ? M.noteName(p) : act === 'cc' ? (p <= 127 ? `CC ${p}` : '') : act === 'mmc' ? 'F0 7F 7F 06 …' : act === 'none' ? '' : act === 'curve' ? 'message on the screen' : act === 'transpose' ? 'semitones; applies to the pads' : HINTS[act] ?? 'on press';
     $('blist').querySelectorAll(`[data-btn="${id}${layer ? 's' : ''}"]`).forEach((n) => n.classList.toggle('changed', !!state.deviceCfg && (state.cfg[A] !== state.deviceCfg[A] || state.cfg[C] !== state.deviceCfg[C] || (!layer && ((state.cfg[MO] >> MS) & 3) !== ((state.deviceCfg[MO] >> MS) & 3)))));
   };
   sel.addEventListener('change', () => {

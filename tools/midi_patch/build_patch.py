@@ -16,7 +16,7 @@ Patches (all addresses are flash addresses in the stock image):
   7. 0x08008d06  bl watchdog kick -> mmk3_tick        main-loop tick: re-applies the LEDs once the stock startup is over
   new flash: config block, device + configuration descriptors, the velocity curve tables, display font and texts, translator code (last)
 Everything else (ADC/DMA pad scan, linearisation, button matrix, strip I2C, LED chips, DFU) is untouched."""
-import argparse, os, re, struct, subprocess, sys, tempfile
+import argparse, json, os, re, struct, subprocess, sys, tempfile
 from elftools.elf.elffile import ELFFile
 
 BASE = 0x08003000
@@ -35,7 +35,10 @@ CURVE_COUNT_ADDR = 0x0800D900        # one byte: how many curves ACT_CURVE steps
 FONT_ADDR = 0x0800D940               # 64 characters x 5 column bytes
 TXT_ADDR = 0x0800DA80                # the display texts, 16 bytes each (at most 192)
 SCALES_ADDR = 0x0800E6C0             # 24 scales as little-endian 16-bit masks (bit n = semitone n)
-CODE_ADDR = 0x0800E700
+HW_ADDR = 0x0800E700                 # hardware tables for our own drivers (hal.c): hw_blob()
+LEDTAB_ADDR = 0x0800E780             # the LED colour tables, copied at build time from the user's stock image (led_tables()): no NI data in the repository
+LEDTAB_SRC, LEDTAB_LEN = 0x08009077, 0x4FC        # up to the end of the four-cell palette (19 colours x 16)
+CODE_ADDR = 0x0800EC80
 
 def c_define(name):
     """The first hex literal of `#define NAME ...` in translate.c: the C source is the one place that knows the addresses it uses."""
@@ -43,8 +46,8 @@ def c_define(name):
     return int(re.search(r'#define\s+' + name + r'\b[^\n]*?(0x[0-9A-Fa-f]+)', src).group(1), 16)
 STATE_ADDR = c_define('ST_ADDR')                 # translator / LED / request state in RAM
 assert (c_define('CFG_DEFAULTS'), c_define('VEL_TABLES'), c_define('CURVE_COUNT'), c_define('FONT_ADDR'), c_define('TXT_ADDR'), c_define('SCALES'), c_define('DESC_DEV_ADDR'),
-        c_define('DESC_CFG_ADDR'), c_define('SAVE_PAGE'), c_define('SLOT_BASE'), c_define('PAT_PAGE')) == \
-       (CFG_ADDR, VEL_TABLE_ADDR, CURVE_COUNT_ADDR, FONT_ADDR, TXT_ADDR, SCALES_ADDR, DESC_DEV_ADDR, DESC_CFG_ADDR, SAVE_PAGE, SLOT_BASE, PAT_PAGE), 'the layout constants of build_patch.py and translate.c differ'
+        c_define('DESC_CFG_ADDR'), c_define('SAVE_PAGE'), c_define('SLOT_BASE'), c_define('PAT_PAGE'), c_define('HW_ADDR'), c_define('LEDTAB_ADDR')) == \
+       (CFG_ADDR, VEL_TABLE_ADDR, CURVE_COUNT_ADDR, FONT_ADDR, TXT_ADDR, SCALES_ADDR, DESC_DEV_ADDR, DESC_CFG_ADDR, SAVE_PAGE, SLOT_BASE, PAT_PAGE, HW_ADDR, LEDTAB_ADDR), 'the layout constants of build_patch.py and translate.c differ'
 
 # The config block layout, its defaults and the action / LED-flag numbers live in mmk3_config.py (the host side of the protocol)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -62,10 +65,18 @@ def bl(src, dst):
     hw2 = 0xD000 | (j1 << 13) | (j2 << 11) | ((off >> 1) & 0x7FF)
     return struct.pack('<HH', hw1, hw2)
 
-def compile_c(here, work):
+def bw(src, dst):
+    """A 32-bit Thumb B.W (T4) from src to dst (for a tail call that is a branch, not a bl)."""
+    off = dst - (src + 4)
+    s = (off >> 24) & 1
+    i1 = (off >> 23) & 1; i2 = (off >> 22) & 1
+    j1 = (~(i1 ^ s)) & 1; j2 = (~(i2 ^ s)) & 1
+    return struct.pack('<HH', 0xF000 | (s << 10) | ((off >> 12) & 0x3FF), 0x9000 | (j1 << 13) | (j2 << 11) | ((off >> 1) & 0x7FF))
+
+def compile_c(here, work, native=False):
     obj = os.path.join(work, 'translate.o')
     subprocess.check_call(['clang', '--target=thumbv7m-none-eabi', '-mcpu=cortex-m3', '-Os', '-ffreestanding',
-                           '-fno-builtin', '-fno-stack-protector', '-Wall', '-c',
+                           '-fno-builtin', '-fno-stack-protector', '-Wall', '-c'] + (['-DNATIVE'] if native else []) + [
                            os.path.join(here, 'translate.c'), '-o', obj])
     with open(obj, 'rb') as f:
         elf = ELFFile(f)
@@ -129,7 +140,7 @@ TEXTS = {
     'T_NORMAL': 'CONFIGURED CC', 'T_PROGRAM': 'PROGRAM', 'T_PC': 'PC', 'T_VALUE': 'VALUE', 'T_CC': 'CC',
     'T_TRIAD': 'TRIAD', 'T_SEVENTH': 'SEVENTH', 'T_SUS2': 'SUS2', 'T_SUS4': 'SUS4', 'T_POWER': 'POWER',
     **{f'T_SCALE{i}': n.upper() for i, n in enumerate(SCALE_NAMES)},
-    'T_PAGE': 'PAGE', 'T_ENCPAGE': 'ENC PAGE', 'T_STEP': 'STEP', 'T_TRK': 'TRK', 'T_PAT': 'PAT', 'T_RUN': 'RUN', 'T_STOP': 'STOP', 'T_TRACK': 'TRACK', 'T_PATTERN': 'PATTERN', 'T_CLEAR': 'CLEAR', 'T_PATTERNS': 'PATTERNS', 'T_CHANNEL': 'CHANNEL', 'T_SLOT': 'SLOT', 'T_LOADED': 'LOADED', 'T_SAVED': 'SAVED', 'T_EMPTY': 'EMPTY', 'T_ERROR': 'FLASH ERROR', 'T_EXNAME': _FW_NAME.upper(), 'T_VER': f'V{FW_VERSION}', 'T_M0': 'DRUMS', 'T_M1': 'KEYS', 'T_M2': 'CHORDS', 'T_CH': 'CH', 'T_CLK': 'CLK', 'T_SEQ': 'SEQ',
+    'T_PAGE': 'PAGE', 'T_ENCPAGE': 'ENC PAGE', 'T_DFU': 'DFU MODE', 'T_FLASHTOLEAVE': 'FLASH TO LEAVE', 'T_STEP': 'STEP', 'T_TRK': 'TRK', 'T_PAT': 'PAT', 'T_RUN': 'RUN', 'T_STOP': 'STOP', 'T_TRACK': 'TRACK', 'T_PATTERN': 'PATTERN', 'T_CLEAR': 'CLEAR', 'T_PATTERNS': 'PATTERNS', 'T_CHANNEL': 'CHANNEL', 'T_SLOT': 'SLOT', 'T_LOADED': 'LOADED', 'T_SAVED': 'SAVED', 'T_EMPTY': 'EMPTY', 'T_ERROR': 'FLASH ERROR', 'T_EXNAME': _FW_NAME.upper(), 'T_VER': f'V{FW_VERSION}', 'T_M0': 'DRUMS', 'T_M1': 'KEYS', 'T_M2': 'CHORDS', 'T_CH': 'CH', 'T_CLK': 'CLK', 'T_SEQ': 'SEQ',
     'T_ARP': 'ARP', 'T_ARPTYPE': 'ARP TYPE', 'T_RATE': 'RATE', 'T_OCT': 'OCTAVES', 'T_LATCH': 'LATCH', 'T_TEMPO': 'TEMPO', 'T_BPM': 'BPM', 'T_CLOCK': 'CLOCK OUT',
     'T_MUTE': 'MUTE', 'T_SOLO': 'SOLO', 'T_CLEARED': 'CLEARED', 'T_LOCK': 'LOCK', 'T_STORED': 'STORED', 'T_RECALLED': 'RECALLED', 'T_EXT': 'EXT CLOCK', 'T_STRUM': 'STRUM NOTES',
     **{f'T_AT{i}': n.upper() for i, n in enumerate(ARP_TYPES)}, **{f'T_RATE{i}': n for i, n in enumerate(ARP_RATES)},
@@ -145,6 +156,23 @@ assert len(SCALE_SEMITONES) == len(SCALE_NAMES) == 24
 SCALES = [sum(1 << n for n in sc) for sc in SCALE_SEMITONES]
 def scales_blob(): return b''.join(struct.pack('<H', m) for m in SCALES)
 
+# The board's wiring, for our own drivers (docs/hardware-map.md): the button matrix has 5 columns, driven low one at a time (the GPIOB bit of
+# each, in scan order: PB3, PB4, PB2, PB10, PB11), and 8 rows read from PC8..PC15; BTN_MATRIX[column * 8 + row] is the button id (mmk3_config.BUTTON_NAMES).
+BTN_COLUMNS = (1 << 3, 1 << 4, 1 << 2, 1 << 10, 1 << 11)
+BTN_MATRIX = (0, 3, 6, 26, 27, 28, 29, 30,   1, 4, 7, 31, 2, 5, 8, 9,   32, 10, 11, 12, 13, 33, 34, 35,   14, 15, 16, 17, 36, 18, 19, 20,
+              21, 37, 22, 23, 24, 25, 38, 39)
+def hw_blob():
+    b = b''.join(struct.pack('<H', m) for m in BTN_COLUMNS).ljust(16, b'\0') + bytes(BTN_MATRIX)
+    assert len(b) <= LEDTAB_ADDR - HW_ADDR
+    return b
+
+def led_tables(stock):
+    """The stock LED colour tables (per LED: kind, number of cells, first cell; per cell: chip row and bit; the colour-code map; the palettes of
+    single, RGB and RGBW LEDs), taken from the user's own stock image, so that hal.c can map colour codes the same way."""
+    t = bytes(stock[LEDTAB_SRC - 0x08003000:LEDTAB_SRC - 0x08003000 + LEDTAB_LEN])
+    assert len(t) == LEDTAB_LEN and LEDTAB_ADDR + LEDTAB_LEN <= CODE_ADDR
+    return t
+
 def text_blob():
     """The texts as 16-byte NUL padded slots in the order of the C enum (the one place the order is defined is translate.c)."""
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'translate.c')).read()
@@ -154,6 +182,14 @@ def text_blob():
     assert sorted(names) == sorted(TEXTS), (set(names) ^ set(TEXTS))
     assert len(names) <= 192 and all(len(TEXTS[n]) <= 15 for n in names)
     return b''.join(TEXTS[n].encode().ljust(16, b'\0') for n in names), names
+
+def native_strings():
+    """The string descriptors of the standalone image: languages (US English), manufacturer and product (the names the device has always had,
+    so that apps see the same device); the serial number is built from the settings page at start-up."""
+    st = lambda t: bytes([2 + 2 * len(t), 3]) + t.encode('utf-16-le')
+    out = bytes([4, 3, 0x09, 0x04]) + st('Native Instruments') + st('Maschine Mikro MK3')
+    assert len(st('Native Instruments')) == 38 and len(st('Maschine Mikro MK3')) == 38   # NAT_STR1_LEN / NAT_STR2_LEN in native.c
+    return out
 
 def descriptors(vid, pid, bcd, max_ma):
     dev = struct.pack('<BBHBBBBHHHBBBB', 18, 1, 0x0200, 0, 0, 0, 64, vid, pid, bcd, 1, 2, 3, 1)
@@ -210,9 +246,12 @@ def main():
                     help='gain in front of the velocity curve and of the pressure messages: smaller = more sensitive, each step doubles (default 5: value12 >> 5 for the linear curve)')
     ap.add_argument('--sens', type=int, default=0xFF, help='pad sensitivity 0..100 to apply at boot (stock ROM default 80); omit to keep the stored value')
     ap.add_argument('--boot-ms', type=lambda x: int(x, 0), default=0xFFFF, help='shorten the startup countdown (stock 6000 ms; the stock LED fade-in ends it after about 1.8 s anyway; omit to keep)')
+    ap.add_argument('--native', action='store_true', help='the standalone image: no NI code (our vector table, reset handler and main loop; '
+                    "NI's LED colour tables are still copied from SRC, which must be the stock image)")
     a = ap.parse_args()
     here = os.path.dirname(os.path.abspath(__file__))
-    img = bytearray(open(a.src, 'rb').read()[:STOCK_LEN])
+    stock = bytes(open(a.src, 'rb').read()[:STOCK_LEN])
+    img = bytearray(b'\xff' * STOCK_LEN) if a.native else bytearray(stock)
 
     def put(addr, data, expect=None):
         off = addr - BASE
@@ -221,12 +260,12 @@ def main():
         img[off:off + len(data)] = data
 
     with tempfile.TemporaryDirectory() as work:
-        code, syms = compile_c(here, work)
+        code, syms = compile_c(here, work, native=a.native)
     texts, _ = text_blob()
     assert CFG_ADDR + CFG_SIZE <= DESC_DEV_ADDR and VEL_TABLE_ADDR + 9 * 256 <= CURVE_COUNT_ADDR and CURVE_COUNT_ADDR + 4 <= FONT_ADDR \
-        and FONT_ADDR + len(FONT) <= TXT_ADDR and TXT_ADDR + 192 * 16 <= SCALES_ADDR and SCALES_ADDR + 48 <= CODE_ADDR and len(texts) <= 192 * 16, 'fixed-size data overlaps'
+        and FONT_ADDR + len(FONT) <= TXT_ADDR and TXT_ADDR + 192 * 16 <= SCALES_ADDR and SCALES_ADDR + 48 <= HW_ADDR and len(texts) <= 192 * 16, 'fixed-size data overlaps'
     assert CODE_ADDR + len(code) <= APP_LIMIT, 'image does not fit the application area'
-    put(0x08003000 + 0x5d54 + 12, struct.pack('<H', a.bcd), bytes.fromhex('5200'))   # stock device descriptor bcdDevice
+    if not a.native: put(0x08003000 + 0x5d54 + 12, struct.pack('<H', a.bcd), bytes.fromhex('5200'))   # stock device descriptor bcdDevice
     dev, cfg = descriptors(a.vid, a.pid, a.bcd, a.max_power)
     assert len(cfg) == 119, len(cfg)             # must match DESC_CFG_LEN in translate.c
     assert DESC_CFG_ADDR + len(cfg) <= VEL_TABLE_ADDR, 'descriptors overlap the velocity table'
@@ -240,20 +279,53 @@ def main():
         return
     put(CFG_ADDR, default_cfg(a.sens, a.boot_ms, a.pad_base, {'absolute': 1, 'relative-offset': 0, 'relative': 2}[a.enc_mode], a.enc_init, {'gate': 0, 'toggle': 1, 'trigger': 2}[a.btn_mode], a.vel_shift, a.transport, a.local_leds == 'on', a.pad_colour, a.strip_colour, curve_index)); put(CODE_ADDR, code)
     put(DESC_DEV_ADDR, dev); put(DESC_CFG_ADDR, cfg); put(VEL_TABLE_ADDR, vtab)
-    put(CURVE_COUNT_ADDR, bytes([9 if a.vel_table else 8]) + b'\0\0\0'); put(FONT_ADDR, FONT); put(TXT_ADDR, texts); put(SCALES_ADDR, scales_blob())
+    put(CURVE_COUNT_ADDR, bytes([9 if a.vel_table else 8]) + b'\0\0\0'); put(FONT_ADDR, FONT); put(TXT_ADDR, texts); put(SCALES_ADDR, scales_blob()); put(HW_ADDR, hw_blob()); put(LEDTAB_ADDR, led_tables(stock))
     if a.stage == 2:
         open(a.dst, 'wb').write(img)
         print(f'stage 2: stage 1 + unused patch payload, {len(img)} B')
         return
     f = lambda n: CODE_ADDR + syms[n] + 1
+    if a.native:                                 # the standalone image: our vector table, a "return 0" stub, our strings; no hooks
+        vec = [0x20001C18, f('native_reset'), f('native_nmi')] + [f('native_fault')] * 4 + [0] * 4 + [f('native_fault')] * 2 + [0] + [f('native_fault'), f('mmk3_systick')]
+        vec += [f('native_fault')] * 68
+        vec[16 + 20] = f('mmk3_usb_isr')             # USB low priority
+        put(0x08003000, struct.pack(f'<{len(vec)}I', *vec))
+        put(0x08003140, bytes.fromhex('00207047'))   # movs r0, #0; bx lr  (STOCK() in translate.c)
+        put(0x08003200, native_strings())
+        open(a.dst, 'wb').write(img)
+        json.dump({n: CODE_ADDR + v for n, v in syms.items() if n and not n.startswith('$')}, open(a.dst + '.syms.json', 'w'), indent=0)
+        hits = [k for k in range(0, len(stock) - 32, 16) if stock[k:k + 32].count(0xFF) < 24 and stock[k:k + 32].count(0) < 24 and stock[k:k + 32] in img and not (LEDTAB_SRC - BASE <= k < LEDTAB_SRC - BASE + LEDTAB_LEN) and not (0x9044 - 0x3000 <= k < 0x9080 - 0x3000) and img.find(stock[k:k + 32]) not in range(0x200, 0x260)]   # (the device names, kept on purpose, are the same UTF-16 as NI's)
+        if hits: print('NI runs at stock offsets', [hex(BASE + k) for k in hits][:20], 'found in the image at', [hex(BASE + img.find(stock[k:k+32])) for k in hits][:20])
+        assert not any(stock[k:k + 32] in img for k in range(0, len(stock) - 32, 16) if stock[k:k + 32].count(0xFF) < 24 and stock[k:k + 32].count(0) < 24
+                       and not (LEDTAB_SRC - BASE <= k < LEDTAB_SRC - BASE + LEDTAB_LEN) and not (0x9044 - 0x3000 <= k < 0x9080 - 0x3000) and img.find(stock[k:k + 32]) not in range(0x200, 0x260)), 'NI bytes in the standalone image'
+        print(f'standalone image: {len(img)} B, code {len(code)} B at {CODE_ADDR:#x}; no NI code (its LED colour tables copied from {a.src})')
+        return
     put(0x08004036, bl(0x08004036, f('mmk3_translate')), bl(0x08004036, 0x08008A38))
     put(0x08008CF8, bl(0x08008CF8, f('mmk3_init')), bl(0x08008CF8, 0x08007EA2))
     put(0x08004ABA, bl(0x08004ABA, f('mmk3_rx')), bl(0x08004ABA, 0x08008798))
     put(0x08008CFC, bl(0x08008CFC, f('mmk3_boot2')), bl(0x08008CFC, 0x08008BAC))
     put(0x08008D06, bl(0x08008D06, f('mmk3_tick')), bl(0x08008D06, 0x08005414))
     put(0x08008526, bytes.fromhex('0021'), bytes.fromhex('e910'))
+    put(0x080042D2, bl(0x080042D2, f('mmk3_led_refresh')), bl(0x080042D2, 0x08006028))     # the LED refresh, from the normal scan ...
+    put(0x0800465A, bl(0x0800465A, f('mmk3_led_refresh')), bl(0x0800465A, 0x08006028))     # ... and from the service routine
+    put(0x0800466A, bl(0x0800466A, f('mmk3_disp_send')), bl(0x0800466A, 0x080068B0))       # the display sender, from the service routine
+    put(0x08004640, bl(0x08004640, f('mmk3_btn_scan')), bl(0x08004640, 0x08007714))        # the button / encoder scan step ...
+    put(0x08004646, bl(0x08004646, f('mmk3_btn_eval')), bl(0x08004646, 0x080077E8))        # ... and its evaluation
+    put(0x08004650, bl(0x08004650, f('mmk3_strip_read')), bl(0x08004650, 0x08007FA4))      # the touch-strip read cycle
+    put(0x08004636, bl(0x08004636, f('mmk3_adc_avg')), bl(0x08004636, 0x080033A4))         # the pad averaging (a scan is done) ...
+    put(0x080042AA, bl(0x080042AA, f('mmk3_pad_eval')), bl(0x080042AA, 0x08003970))         # ... and the pad evaluation
+    put(0x080042B4, bl(0x080042B4, f('mmk3_enc_report')), bl(0x080042B4, 0x0800392C))       # the report builders: encoder ...
+    put(0x080042BE, bl(0x080042BE, f('mmk3_btn_report')), bl(0x080042BE, 0x080038D0))       # ... buttons ...
+    put(0x080042C8, bl(0x080042C8, f('mmk3_strip_report')), bl(0x080042C8, 0x08003CE4))     # ... strip
+    put(0x080046A4, bw(0x080046A4, f('mmk3_dispatch')), bw(0x080046A4, 0x08003E24))         # the dispatcher (a tail branch in the service routine)
+    put(0x08008D00, bl(0x08008D00, f('mmk3_iwdg_start')), bl(0x08008D00, 0x080053F0))      # main(): the watchdog set-up
+    put(0x08008D0A, bl(0x08008D0A, f('mmk3_service')), bl(0x08008D0A, 0x08004620))         # the main loop: the service routine ...
+    put(0x08008D2A, bl(0x08008D2A, f('mmk3_normal')), bl(0x08008D2A, 0x080042A0))          # ... and the normal-mode scan
+    put(0x0800303C, struct.pack('<I', f('mmk3_systick')), struct.pack('<I', 0x08007E55))   # the SysTick vector
+    put(0x08003090, struct.pack('<I', f('mmk3_usb_isr')), struct.pack('<I', 0x08008795))   # the USB low-priority interrupt vector
     put(0x08008460, bytes.fromhex('03 28 34 bf 00 20 02 20'.replace(' ', '')), bytes.fromhex('08b1 0220 7047 0020'.replace(' ', '')))
     open(a.dst, 'wb').write(img)
+    json.dump({n: CODE_ADDR + v for n, v in syms.items() if n and not n.startswith('$')}, open(a.dst + '.syms.json', 'w'), indent=0)   # for the tests: where our functions are
     print(f'code {len(code)} B at {CODE_ADDR:#x} (image ends at {CODE_ADDR + len(code):#x}, application area up to {APP_LIMIT:#x}); image {len(img)} B; '
           f'config {len(cfg)} B, VID:PID {a.vid:04x}:{a.pid:04x}, bcdDevice {a.bcd:#06x}, {a.max_power} mA, '
           f'velocity {"custom table" if a.vel_table else a.vel_curve}, vel-shift {a.vel_shift}, pad 1 = note {a.pad_base}, transport {a.transport}, local LEDs {a.local_leds}')

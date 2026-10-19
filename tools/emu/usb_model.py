@@ -130,8 +130,10 @@ class UsbModel:
         if mu.reg_read(UC_ARM_REG_PC) != 0x08000000:
             raise RuntimeError(f'did not return (pc={mu.reg_read(UC_ARM_REG_PC):#x}); instruction limit hit')
 
+    isr_pc = USB_LP_ISR  # the interrupt entry to run (a test of another USB stack sets its own)
+
     def isr(self):
-        self.run(USB_LP_ISR)
+        self.run(self.isr_pc)
 
     def reset(self):
         self.flags |= ISTR_RESET

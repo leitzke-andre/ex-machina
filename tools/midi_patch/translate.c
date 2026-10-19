@@ -22,7 +22,25 @@ typedef signed char s8;
 typedef unsigned short u16;
 typedef unsigned int u32;
 
-#define ENQUEUE ((u32 (*)(const void *, u32))0x08008a39)   /* original ring enqueue (Thumb) */
+#ifdef NATIVE
+#define STOCK(a) 0x08003141u                         /* the standalone image has no NI code: every call to it goes to a "return 0" stub (native.c) */
+#else
+#define STOCK(a) (a)                                 /* a routine of NI's firmware in the patched image */
+#endif
+static u32 ring_put(const void *src, u32 n);
+static void own_threshold(void);
+#ifdef NATIVE
+#define OURS(x) 1                                    /* the standalone image: always our code (no switch, nothing of NI's to switch to) */
+#else
+#define OURS(x) (x)                                  /* the patched image: our code where the run-time switch (SysEx 1C) says so */
+#endif
+#ifdef NATIVE
+#define THRESHOLD() own_threshold()
+#else
+#define THRESHOLD() ((void (*)(void))0x080046B9)()   /* the stock routine (the tests count its calls) */
+#endif
+static u32 enqueue(const void *src, u32 n);
+#define ENQUEUE enqueue                              /* the transmit ring: ours with our USB stack (usb.c ring_put, the same as the stock enqueue: test_hal_usb.py), else the stock one */
 
 /* What a button does (cfg.btn_act / btn_act2). ACT_CC sends the CC number in btn_cc (0xff = unassigned), ACT_NOTE the note number,
  * ACT_MMC the MMC command byte (1 stop, 2 play, 6 record strobe ...); the realtime actions ignore btn_cc. */
@@ -54,7 +72,8 @@ enum { ACT_CC, ACT_NOTE, ACT_START, ACT_CONT, ACT_STOP, ACT_MMC, ACT_NONE,
        ACT_CLEAR,           /* clear all mutes and solos */
        ACT_SNAP,            /* parameter 0: store the encoder targets, strip and encoder values, or (when stored) send them back; 1: store again */
        ACT_CHANNEL,         /* MIDI channel: parameter 0 = next, 1 = previous (kept across power cycles like the curve; the notes on the old channel are released) */
-       ACT_SLOT,            /* the four preset slots in flash: parameter 0..3 = make slot n+1 the active config, 4..7 = store the active config in slot n-3 */
+       ACT_SLOT,            /* the four preset slots in flash: parameter 0..3 = make slot n+1 the active config, 4..7 = store the active config in slot n-3,
+                               8 = load the next slot holding a config (1, 2, 3, 4, 1, ...) */
        ACT_STEP,            /* the step sequencer's edit mode: pad n = step n of the selected track (a third pad function next to Group / Keyboard / Chords) */
        ACT_SEQRUN,          /* parameter 0: start / stop the sequencer (it follows the grid), 1: restart it from step 1 */
        ACT_SEQSEL,          /* hold: a pad hit selects that track instead of editing a step */
@@ -124,6 +143,8 @@ _Static_assert(sizeof(struct cfg) == 274, "cfg layout is mirrored in mmk3_config
 #define FONT_ADDR 0x0800D940u                            /* 5 x 7 font, ASCII 32..95, 5 column bytes each (bit 0 = top row) */
 #define TXT_ADDR 0x0800DA80u                             /* the texts of the display messages: 16 bytes each, NUL padded (build_patch.py TEXTS) */
 #define SCALE_N 24u
+#define HW_ADDR 0x0800E700                        /* the board's wiring for hal.c (build_patch.py hw_blob: button matrix) */
+#define LEDTAB_ADDR 0x0800E780                    /* the LED colour tables for hal.c (build_patch.py led_tables, from the user's stock image) */
 #define SCALES ((const u16 *)0x0800E6C0)                 /* 12-bit masks of the scales, bit n = semitone n (build_patch.py SCALES) */
 
 struct state {              /* RAM above the firmware's stack, zeroed by mmk3_init */
@@ -155,7 +176,8 @@ struct state {              /* RAM above the firmware's stack, zeroed by mmk3_in
     u8 flags_boot;          /* the config in use at boot came from the saved record */
     u8 dirty;               /* the active config differs from what is saved (or from the defaults when nothing is saved) */
     u8 req;                 /* pending request (SysEx command 0x10..0x14), handled by mmk3_tick() */
-    u8 slot_req;            /* a preset slot to load (1..4) or store (5..8), done by the main loop */
+    u8 slot_req;            /* a preset slot to load (1..4) or store (5..8), or the next one to load (9), done by the main loop */
+    u8 slot_cur;            /* the slot the active config came from or went to (1..4), 0 = not known: a new config clears it */
     u8 req_arg;
     u8 slname[24] __attribute__((aligned(4)));          /* the name kept with a preset slot: of the last slot loaded or stored (0xFF padded; all 0xFF = none); a new config clears it */
     u8 req_err;             /* the request was malformed when it arrived */
@@ -226,6 +248,24 @@ struct state {              /* RAM above the firmware's stack, zeroed by mmk3_in
     u32 vnotes[4];          /* the notes the idle screen shows (bit n = note n): those sounding, kept for NOTE_HOLD_MS after the last one stopped */
     u16 nt0;                /* when the last note stopped (the stock millisecond counter) */
     u8 nt_on;               /* nt0 is running */
+    u8 gest;                /* the DFU gesture (Shift + Stop + Erase): 0 not held, 1 held since gest_t0, 2 announced (the reset follows) */
+    u8 healthy;             /* the crash-loop guard was cleared after HEALTHY_MS of normal running */
+    u16 gest_t0, run_t0;    /* when the gesture began; when the startup ended */
+    u16 cap_mask;           /* raw pad capture: the ADC channels being recorded (0 = off), see cap_tick() */
+    u8 cap_period;          /* ... one frame every cap_period ms */
+    u8 cap_hang;            /* a HANG request was confirmed: the next tick stops (the watchdog test) */
+    u16 cap_t;              /* ... when the last frame was taken */
+    u8 hal, hal2;           /* our own drivers switched on (hal.c, SysEx 1C): mask bytes */
+    u8 own_init;            /* this boot ran our board init (and runs our start-up and main loop) */
+    u8 boot_done;           /* our start-up has ended (display on, USB started) */
+    u8 own_usb;             /* this boot runs our USB stack (usb.c) */
+    u8 u_ctl, u_zlp, u_addr, u_addr_set, u_config, u_detach, u_ever, u_ok;   /* usb.c: control transfer state, address, configuration, DFU detach, a request answered */
+    u16 u_left, u_detach_t, u_t0;
+    const volatile u8 *u_ptr;
+    u8 u_buf[8];
+    u8 reboot;              /* a reboot was asked for (SysEx 1C flag 4): done once the reply is out */
+    u16 hal_ok, hal_fail;   /* LED bursts of our driver that every chip acknowledged / that one did not (for checking it on the device) */
+    u16 strip_ok, strip_fail;   /* read cycles of our strip driver that worked / that the controller did not answer */
 };
 #define ST_ADDR 0x20004200u
 #define ST ((struct state *)ST_ADDR)
@@ -233,6 +273,10 @@ struct state {              /* RAM above the firmware's stack, zeroed by mmk3_in
 _Static_assert(ST_ADDR + sizeof(struct state) <= 0x20005000u, "state must fit into the free RAM above the stack");
 
 static void cfg_load(struct state *s);
+static void enter_dfu(void);
+static void hal_set(struct state *s, u32 mask, u32 mask2, u32 flags);
+static void own_board_init(void);
+static void own_stage2(const u8 *pic, u32 countdown);
 static void pat_load(struct state *s);
 static void mode_reset(struct state *s, const struct cfg *c);
 
@@ -334,7 +378,7 @@ enum { T_PADMODE, T_KEYBOARD, T_FIXVEL, T_VEL16, T_VELOCITY, T_TRANSPOSE, T_PANI
        T_CHORDS, T_SCALE, T_CHORD, T_ENCODER, T_STRIP, T_PITCH, T_MOD, T_NORMAL, T_PROGRAM, T_PC, T_VALUE, T_CC, T_TRIAD, T_SEVENTH, T_SUS2, T_SUS4, T_POWER,
        T_SCALE0, T_SCALE1, T_SCALE2, T_SCALE3, T_SCALE4, T_SCALE5, T_SCALE6, T_SCALE7, T_SCALE8, T_SCALE9, T_SCALE10, T_SCALE11,
        T_SCALE12, T_SCALE13, T_SCALE14, T_SCALE15, T_SCALE16, T_SCALE17, T_SCALE18, T_SCALE19, T_SCALE20, T_SCALE21, T_SCALE22, T_SCALE23,
-       T_PAGE, T_ENCPAGE, T_STEP, T_TRK, T_PAT, T_RUN, T_STOP, T_TRACK, T_PATTERN, T_CLEAR, T_PATTERNS, T_CHANNEL, T_SLOT, T_LOADED, T_SAVED, T_EMPTY, T_ERROR, T_EXNAME, T_VER, T_M0, T_M1, T_M2, T_CH, T_CLK, T_SEQ,
+       T_PAGE, T_ENCPAGE, T_DFU, T_FLASHTOLEAVE, T_STEP, T_TRK, T_PAT, T_RUN, T_STOP, T_TRACK, T_PATTERN, T_CLEAR, T_PATTERNS, T_CHANNEL, T_SLOT, T_LOADED, T_SAVED, T_EMPTY, T_ERROR, T_EXNAME, T_VER, T_M0, T_M1, T_M2, T_CH, T_CLK, T_SEQ,
        T_ARP, T_ARPTYPE, T_RATE, T_OCT, T_LATCH, T_TEMPO, T_BPM, T_CLOCK, T_MUTE, T_SOLO, T_CLEARED, T_LOCK, T_STORED, T_RECALLED, T_EXT, T_STRUM,
        T_AT0, T_AT1, T_AT2, T_AT3, T_AT4, T_AT5, T_RATE0, T_RATE1, T_RATE2, T_RATE3, T_RATE4, T_RATE5, T_RATE6, T_COUNT };
 
@@ -966,7 +1010,7 @@ static void mode_action(struct state *s, const struct cfg *c, u8 act, u8 par)
         s->log_req |= 1;
         announce_curve(s, c);
     } else if (act == ACT_SLOT) {
-        s->slot_req = par < 8 ? (u8)(par + 1) : 0;         /* flash work: left to the main loop */
+        s->slot_req = par <= 8 ? (u8)(par + 1) : 0;        /* flash work: left to the main loop */
         return;
     } else if (act == ACT_CHANNEL) {
         u32 k, ch = c->channel & 15;
@@ -1074,7 +1118,9 @@ static u8 *button_event(struct state *s, const struct cfg *c, u8 *q, u8 act, u8 
  * the stock enqueue copies at once, and its return value is not used by the caller. */
 #define ROOM(n) do { if ((u32)(q - s->out) + (n) > sizeof s->out) { ENQUEUE(s->out, (u32)(q - s->out)); q = s->out; } } while (0)
 
-u32 mmk3_translate(const u8 *buf, u32 len)
+static u32 translate_report(const u8 *buf, u32 len);
+u32 mmk3_translate(const u8 *buf, u32 len) { return translate_report(buf, len); }   /* (a global symbol: hal.c calls the static one, no relocation) */
+static u32 translate_report(const u8 *buf, u32 len)
 {
     struct state *s = state();
     const struct cfg *c = s->cfgp;
@@ -1284,12 +1330,59 @@ u32 mmk3_translate(const u8 *buf, u32 len)
 #define DESC_CFG_ADDR 0x0800CF40u
 #define DESC_CFG_LEN 119u
 
-void mmk3_init(void)
+/* ---- safety: the crash-loop guard (docs/clean-firmware-plan.md, stage 0) ----
+ * RAM keeps its content through a reset (not through a power cycle), so the guard counts consecutive watchdog resets there. Three in a row
+ * and the device goes into DFU mode instead of starting again; any other reset cause starts the count over, and HEALTHY_MS of normal
+ * running clear it. The watchdog is started here, at the patch's first instruction, so that a hang before the stock init starts it (with
+ * its own 1 s) also ends in a reset: about 26 s (40 kHz / 256, reload 4095). */
+#define RCC_CSR (*(volatile u32 *)0x40021024u)
+#define IWDG_KR (*(volatile u32 *)0x40003000u)
+#define IWDG_PR (*(volatile u32 *)0x40003004u)
+#define IWDG_RLR (*(volatile u32 *)0x40003008u)
+#define GUARD ((volatile u32 *)0x20004FF0u)          /* magic, count, ~count, RCC_CSR of this boot (above the state, below the end of RAM) */
+#define GUARD_MAGIC 0x47524431u
+#define GUARD_LIMIT 3u
+#define HEALTHY_MS 10000u
+#define ADC_RAW ((const volatile u16 *)0x20000718)
+#define CAP_BASE 0x20001C20u                         /* header: magic, frames, frame size, mask; frames from CAP_BASE + 16 */
+#define CAP_END 0x200041F0u
+#define CAP ((volatile u32 *)CAP_BASE)
+#define CAP_MAGIC 0x50414352u
+#define BOOT_FLAG (*(volatile u32 *)0x20004FECu)  /* one-shot: the next boot uses our board init (hal.c own_board_init) */
+#define BOOT_OWN_INIT 0x4F574E31u
+#define BOOT_OWN_USB 0x4F574E32u                  /* ... and our USB stack */
+_Static_assert(ST_ADDR + sizeof(struct state) <= 0x20004FC0u, "the state must leave the diagnostics, the boot flag and the guard words alone");
+
+static void guard_boot(void)
 {
+    u32 csr = RCC_CSR, n;
+    RCC_CSR = csr | (1u << 24);                      /* RMVF: the next boot sees only its own cause */
+    IWDG_KR = 0x5555u; IWDG_PR = 6; IWDG_RLR = 0xFFFu; IWDG_KR = 0xAAAAu; IWDG_KR = 0xCCCCu;
+    n = (GUARD[0] == GUARD_MAGIC && GUARD[2] == ~GUARD[1]) ? GUARD[1] : 0;
+    n = (csr & (1u << 29)) ? n + 1 : 0;              /* IWDGRSTF: one more watchdog reset in a row */
+    GUARD[0] = GUARD_MAGIC; GUARD[1] = n; GUARD[2] = ~n; GUARD[3] = csr;
+    if (n >= GUARD_LIMIT) { GUARD[1] = 0; GUARD[2] = ~0u; enter_dfu(); }
+}
+
+/* Replaces main()'s call of the stock watchdog set-up: prescaler / 32, reload 1250 = 1 s, then started (the same values). */
+static void iwdg_start(void)
+{
+    IWDG_KR = 0x5555u; IWDG_PR = 3; IWDG_RLR = 1250; IWDG_KR = 0xAAAAu; IWDG_KR = 0xCCCCu;
+}
+
+void mmk3_iwdg_start(void) { iwdg_start(); }
+static void init_body(void);
+void mmk3_init(void) { init_body(); }
+static void init_body(void)
+{
+    u32 own = BOOT_FLAG == BOOT_OWN_INIT || BOOT_FLAG == BOOT_OWN_USB, own_usb = BOOT_FLAG == BOOT_OWN_USB;
+    BOOT_FLAG = 0;                                   /* one-shot: if our init fails, the watchdog reset comes back to the stock one */
+    guard_boot();
     state_reset(ST);
     DESC_TABLE[0] = DESC_DEV_ADDR;  DESC_TABLE[1] = 18;
     DESC_TABLE[2] = DESC_CFG_ADDR;  DESC_TABLE[3] = DESC_CFG_LEN;
-    ((void (*)(void))0x08007EA3)(); /* original board/USB init */
+    if (own) { ST->own_init = 1; ST->own_usb = (u8)own_usb; ST->hal = 0x7F; ST->hal2 = 3; own_board_init(); }     /* a boot of ours: every driver of ours from the start */
+    else ((void (*)(void))STOCK(0x08007EA3))(); /* original board/USB init */
 }
 
 /* ---- late boot hook: replaces `bl 0x08008bac` in main (stage-2 init: pad sensitivity, LED chips, ...) ---- */
@@ -1314,14 +1407,17 @@ static void local_led_init(struct state *s, u8 clear)
     if (clear || (c->led_flags & (LF_BTN_IDLE | LF_PAD_IDLE))) s->lit = 1;
 }
 
-void mmk3_boot2(void)
+static void boot2_body(void);
+void mmk3_boot2(void) { boot2_body(); }
+static void boot2_body(void)
 {
     struct state *s = state();
     const struct cfg *c = s->cfgp;
-    ((void (*)(void))0x08008BAD)();                 /* stock stage-2 init */
+    if (s->own_init) own_stage2(0, c->boot_ms != 0xFFFF ? c->boot_ms : 300);   /* ours: no logo, no LED animation, 0.3 s */
+    else ((void (*)(void))STOCK(0x08008BAD))();            /* stock stage-2 init */
     if (c->sens <= 100) {
         SENS_BYTE = c->sens;
-        ((void (*)(void))0x080046B9)();             /* stock: threshold = (100 - sens) * 6, reset pad state */
+        THRESHOLD();                                 /* threshold = (100 - sens) * 6, the pad states reset */
     }
     if (c->boot_ms != 0xFFFF) BOOT_COUNT = c->boot_ms;
     local_led_init(s, 0);
@@ -1461,6 +1557,15 @@ static void mode_reset(struct state *s, const struct cfg *c)
 
 /* A record in a flash page (the saved config or a preset slot): rec_ok = it is intact; rec_load = it is, and `out` now holds its config laid over the
  * defaults and range-checked. */
+/* Project (button 0, top left) always loads the next preset slot, with and without Shift: whatever a config says, it is set here on every config
+ * that enters RAM (the defaults, the saved one, a slot, one from the host), so the way through the slots can never be mapped away. */
+#define BTN_PROJECT 0
+static void cfg_fixed(struct cfg *c)
+{
+    c->btn_act[BTN_PROJECT] = ACT_SLOT; c->btn_cc[BTN_PROJECT] = 8;
+    c->btn_act2[BTN_PROJECT] = ACT_NONE; c->btn_cc2[BTN_PROJECT] = 0xFF;   /* with Shift: the same */
+}
+
 static u32 rec_ok(u32 page)
 {
     const struct rec *r = (const struct rec *)page;
@@ -1472,13 +1577,16 @@ static u32 rec_load(u32 page, struct cfg *out)
     if (!rec_ok(page)) return 0;
     copy8(out, CFG_DEFAULTS, sizeof *out);
     copy8(out, r->data, r->len);                    /* a shorter record (older layout) only overlays the fields it has */
-    return !cfg_check(out);
+    if (cfg_check(out)) return 0;
+    cfg_fixed(out);
+    return 1;
 }
 
 static void cfg_load(struct state *s)
 {
     struct cfg *c = &s->cfgbuf[0];
     copy8(c, CFG_DEFAULTS, sizeof *c);
+    cfg_fixed(c);
     u32 k;
     s->cfgp = c; s->cfgi = 0;
     for (k = 0; k < 24; k++) s->slname[k] = 0xFF;
@@ -1487,11 +1595,42 @@ static void cfg_load(struct state *s)
 }
 
 /* ST's flash primitives (the standard peripheral library routines of the stock firmware). */
-#define FLASH_UNLOCK ((void (*)(void))0x08004C35)
-#define FLASH_LOCK ((void (*)(void))0x08004B99)
-#define FLASH_CLEAR ((void (*)(u32))0x08004B1D)
-#define FLASH_ERASE ((u32 (*)(u32))0x08004B29)       /* page erase, returns 4 = complete */
-#define FLASH_PROG ((u32 (*)(u32, u32))0x08004BC1)   /* programs one 32-bit word (two halfwords) into erased flash */
+/* The flash controller (our own, the same logic as ST's library the stock firmware uses): status 1 busy, 2 programming error, 3 write
+ * protected, 4 complete, 5 timeout. */
+#define FL_KEYR (*(volatile u32 *)0x40022004u)
+#define FL_SR (*(volatile u32 *)0x4002200Cu)
+#define FL_CR (*(volatile u32 *)0x40022010u)
+#define FL_AR (*(volatile u32 *)0x40022014u)
+static void FLASH_UNLOCK(void) { FL_KEYR = 0x45670123u; FL_KEYR = 0xCDEF89ABu; }
+static void FLASH_LOCK(void) { FL_CR |= 0x80u; }
+static void FLASH_CLEAR(u32 flags) { FL_SR = flags; }
+static u32 fl_status(void) { u32 sr = FL_SR; return (sr & 1u) ? 1u : (sr & 4u) ? 2u : (sr & 0x10u) ? 3u : 4u; }
+static u32 fl_wait(u32 timeout)
+{
+    u32 st = fl_status();
+    while (st == 1u && timeout) { volatile u32 d = 0xFF; while (d) d--; st = fl_status(); timeout--; }
+    return timeout ? st : 5u;
+}
+static u32 __attribute__((noinline)) FLASH_ERASE(u32 page)          /* page erase, returns 4 = complete */
+{
+    u32 st = fl_wait(0xFFFFFu);
+    if (st != 4u) return st;
+    FL_CR |= 2u; FL_AR = page; FL_CR |= 0x40u;
+    st = fl_wait(0xFFFFFu);
+    if (st != 1u) FL_CR &= 0x1FFDu;
+    return st;
+}
+static u32 __attribute__((noinline)) FLASH_PROG(u32 addr, u32 word) /* programs one 32-bit word (two halfwords) into erased flash */
+{
+    u32 st = fl_wait(0xFFFFu);
+    if (st != 4u) return st;
+    FL_CR |= 1u;
+    *(volatile u16 *)addr = (u16)word;
+    st = fl_wait(0xFFFFu);
+    if (st == 4u) { *(volatile u16 *)(addr + 2) = (u16)(word >> 16); st = fl_wait(0xFFFFu); }
+    if (st != 1u) FL_CR &= 0x1FFEu;
+    return st;
+}
 
 static u32 page_blank(u32 page)
 {
@@ -1508,6 +1647,26 @@ static u32 page_erase(u32 page)                      /* 1 on success (a blank pa
     if (FLASH_ERASE(page) != 4) ok = 0;
     FLASH_LOCK();
     return ok && page_blank(page);
+}
+
+/* ---- safety: the way into NI's bootloader (docs/clean-firmware-plan.md, stage 0) ----
+ * The bootloader starts in DFU mode when the handshake page holds the request below (it leaves the two words swapped after a successful
+ * flash, and then starts the app). The app asks for it like the stock DFU_DETACH does: the page holds the request and nothing else, then
+ * a system reset. The device stays in DFU mode, even across a power cycle, until an image is flashed. */
+#define HANDSHAKE 0x0801FC00u
+#define AIRCR (*(volatile u32 *)0xE000ED0Cu)
+static void enter_dfu(void)
+{
+    __asm volatile("cpsid i");
+    if (page_erase(HANDSHAKE)) {
+        FLASH_UNLOCK(); FLASH_CLEAR(0x35);
+        FLASH_PROG(HANDSHAKE, 0xAAA55A55u);          /* 55 5A A5 AA */
+        FLASH_PROG(HANDSHAKE + 4, 0xA33A9559u);      /* 59 95 3A A3 */
+        FLASH_LOCK();
+    }
+    __asm volatile("dsb");
+    AIRCR = 0x05FA0004u;                             /* SYSRESETREQ */
+    for (;;) { }
 }
 
 /* ---- the settings log: changes made with the controller's own buttons that are kept without saving the whole config ----
@@ -1631,7 +1790,7 @@ static void cfg_activate(struct state *s, const struct cfg *c)
     led_flush();
     if (c->sens <= 100 && SENS_BYTE != c->sens) {   /* like the stage-2 init: the stock threshold routine recomputes from the stored value */
         SENS_BYTE = c->sens;
-        ((void (*)(void))0x080046B9)();
+        THRESHOLD();
     }
 }
 
@@ -1639,27 +1798,53 @@ static void cfg_commit(struct state *s, const struct cfg *n)
 {
     u8 i = s->cfgi ^ 1;                             /* fill the buffer that is not in use, then switch */
     copy8(&s->cfgbuf[i], n, sizeof *n);
+    cfg_fixed(&s->cfgbuf[i]);
     u32 k;
     s->cfgi = i;
     s->dirty = 1;
-    for (k = 0; k < 24; k++) s->slname[k] = 0xFF;        /* a new config has no slot name (a slot load sets it after) */
+    for (k = 0; k < 24; k++) s->slname[k] = 0xFF;        /* a new config has no slot name and no slot (a slot load sets them after) */
+    s->slot_cur = 0;
     cfg_activate(s, &s->cfgbuf[i]);
 }
 
-/* A preset slot, asked for with a button: op 1..4 make slot op the active config, 5..8 store the active config in slot op - 4. */
+/* The slot after the current one that holds a config (1..4), 0 = none. Without a current slot (power-up, a config from the host), the one whose
+ * config is the active one counts as current; if none is, the search starts at slot 1. */
+static u32 slot_next(struct state *s)
+{
+    u32 cur = s->slot_cur, k, n;
+    if (!cur)
+        for (k = 0; k < 4 && !cur; k++) {
+            struct cfg *t = &s->cfgbuf[s->cfgi ^ 1];
+            if (rec_load(SLOT_PAGE(k), t) && same8(t, s->cfgp, sizeof *t)) cur = k + 1;
+        }
+    for (k = 1; k <= 4; k++) {
+        n = (cur + k - 1) & 3;                           /* (cur 0: slot 1 first) */
+        if (rec_ok(SLOT_PAGE(n))) return n + 1;
+    }
+    return 0;
+}
+
+/* A preset slot, asked for with a button: op 1..4 make slot op the active config, 5..8 store the active config in slot op - 4, 9 load the next
+ * slot that holds a config. */
 static void slot_do(struct state *s, u32 op)
 {
-    u32 n = (op - 1) & 3, p;
+    u32 n, p;
+    if (op == 9) {
+        op = slot_next(s);
+        if (!op) { m_begin(s, T_SLOT); tx(s->md, 0, T_EMPTY, 21); m_show(s); return; }   /* no slot holds a config */
+    }
+    n = (op - 1) & 3;
     m_begin(s, T_SLOT);
     p = tc(s->mt, 4, ' ', 10); tn(s->mt, p, n + 1, 10);
     if (op <= 4) {
         struct cfg *t = &s->cfgbuf[s->cfgi ^ 1];               /* the buffer that is not in use */
         if (rec_load(SLOT_PAGE(n), t)) {
-            cfg_commit(s, t); slname_load(s, SLOT_PAGE(n));
+            cfg_commit(s, t); slname_load(s, SLOT_PAGE(n)); s->slot_cur = (u8)(n + 1);
             if (s->slname[0] != 0xFF) { u32 k = 0; while (k < NAME_MAX && s->slname[k] != 0xFF) { tc(s->md, k, (char)s->slname[k], 21); k++; } }
             else tx(s->md, 0, T_LOADED, 21);
         } else tx(s->md, 0, T_EMPTY, 21);
-    } else tx(s->md, 0, rec_write(s, SLOT_PAGE(n), s->cfgp, 1) ? T_SAVED : T_ERROR, 21);
+    } else if (rec_write(s, SLOT_PAGE(n), s->cfgp, 1)) { s->slot_cur = (u8)(n + 1); tx(s->md, 0, T_SAVED, 21); }
+    else tx(s->md, 0, T_ERROR, 21);
     m_show(s);
 }
 
@@ -1707,7 +1892,26 @@ static u32 peek_ok(u32 a, u32 n)
         || IN(0x1FFFF800u, 0x1FFFF80Fu)              /* option bytes (read protection, write protection) */
         || IN(0x40022000u, 0x4002202Fu)              /* flash interface: ACR, SR, CR, OBR, WRPR */
         || IN(0xE0042000u, 0xE0042003u)              /* DBGMCU_IDCODE */
-        || IN(0xE000ED00u, 0xE000ED03u);             /* CPUID */
+        || IN(0xE000ED00u, 0xE000ED3Fu)              /* SCB: CPUID, ICSR, VTOR, AIRCR, SCR, CCR, SHPR, SHCSR, fault status */
+        || IN(0xE000E010u, 0xE000E01Fu)              /* SysTick */
+        || IN(0xE000E100u, 0xE000E11Fu) || IN(0xE000E400u, 0xE000E43Fu)    /* NVIC: enabled interrupts, priorities */
+        /* the configuration registers of the peripherals (stage-1 recon, docs/clean-firmware-plan.md); registers whose read has a side
+         * effect (ADC / SPI / USART data, I2C status, the timers' DMA burst register) are left out */
+        || IN(0x40021000u, 0x40021027u)              /* RCC, including CSR (the reset cause) */
+        || IN(0x40010000u, 0x4001001Fu)              /* AFIO */
+        || IN(0x40010400u, 0x40010417u)              /* EXTI */
+        || (a >= 0x40010800u && e <= 0x40011BFFu && ((a & 0x3FFu) + n) <= 0x1Cu)   /* GPIOA..E: CRL, CRH, IDR, ODR, BSRR, BRR, LCKR */
+        || IN(0x40012400u, 0x4001244Bu)              /* ADC1 without DR */
+        || IN(0x40012800u, 0x4001284Bu)              /* ADC2 without DR */
+        || IN(0x40020000u, 0x4002008Fu)              /* DMA1 */
+        || IN(0x40012C00u, 0x40012C4Bu) || IN(0x40000000u, 0x4000004Bu) || IN(0x40000400u, 0x4000044Bu) || IN(0x40000800u, 0x4000084Bu)   /* TIM1..4 without DMAR */
+        || IN(0x40013000u, 0x4001300Bu) || IN(0x40003800u, 0x4000380Bu)    /* SPI1, SPI2: CR1, CR2, SR */
+        || IN(0x40005400u, 0x4000540Fu) || IN(0x40005800u, 0x4000580Fu)    /* I2C1, I2C2: CR1, CR2, OAR1, OAR2 */
+        || IN(0x40003000u, 0x4000300Fu)              /* IWDG */
+        || IN(0x40007000u, 0x40007007u)              /* PWR */
+        || IN(0x40006C00u, 0x40006C2Bu)              /* BKP */
+        || IN(0x40005C00u, 0x40005C53u)              /* USB registers */
+        || IN(0x40006000u, 0x400063FFu);             /* USB packet memory */
 #undef IN
 }
 
@@ -1717,6 +1921,9 @@ static void req_start(struct state *s, const u8 *b, u32 n)
     if (s->req) return;                              /* busy: the host asks again */
     s->req_err = 0; s->req_arg = n > 1 ? b[1] : 0;
     if (b[0] == 0x1E) { copy8(s->stage, b + 1, n > 7 ? 6 : n - 1); if (n != 7) s->req_err = 1; }
+    if (b[0] == 0x1C) { if (n < 2 || n > 4) s->req_err = 1; s->stage[0] = n > 2 ? b[2] : 0; s->stage[1] = n > 3 ? b[3] : 0; }
+    if (b[0] == 0x1D) { copy8(s->stage, b + 1, n > 5 ? 4 : n - 1); if (n != 5) s->req_err = 1; }
+    if (b[0] == 0x1F && !(n == 5 && b[1] == 'H' && b[2] == 'A' && b[3] == 'N' && b[4] == 'G')) s->req_err = 1;
     if (b[0] == 0x12 && unpack7(s->stage, sizeof s->stage, b + 1, n - 1) != sizeof(struct cfg)) s->req_err = 1;
     if ((b[0] == 0x15 && (n < 2 || n > 2 + NAME_MAX)) || (b[0] == 0x16 && n != 2)) s->req_err = 1;       /* the slot number is required, a store may add a name (up to 20 characters) */
     if (b[0] == 0x15 && !s->req_err) {
@@ -1733,13 +1940,14 @@ static void req_start(struct state *s, const u8 *b, u32 n)
 static void request(struct state *s)                 /* main loop: one pending request, its reply goes to reply[] */
 {
     u8 cmd = s->req, status = 0;
+    s->u_ok = 1;                                     /* (usb.c: a host talks to us) */
     u32 bad = 0;
     if (cmd == 0x15 || cmd == 0x16) {                /* store the active config in slot / make a slot the active config: status 2 bad slot, 3 flash error, 4 empty slot */
         u32 n = s->req_arg;
         if (s->req_err) status = 1;
         else if (n > 3) status = 2;
-        else if (cmd == 0x15) status = rec_write(s, SLOT_PAGE(n), s->cfgp, 1) ? 0 : 3;
-        else { struct cfg *t = &s->cfgbuf[s->cfgi ^ 1]; if (rec_load(SLOT_PAGE(n), t)) { cfg_commit(s, t); slname_load(s, SLOT_PAGE(n)); } else status = 4; }
+        else if (cmd == 0x15) { if (rec_write(s, SLOT_PAGE(n), s->cfgp, 1)) s->slot_cur = (u8)(n + 1); else status = 3; }
+        else { struct cfg *t = &s->cfgbuf[s->cfgi ^ 1]; if (rec_load(SLOT_PAGE(n), t)) { cfg_commit(s, t); slname_load(s, SLOT_PAGE(n)); s->slot_cur = (u8)(n + 1); } else status = 4; }
         rep_start(s, 0x40 + cmd); rep_byte(s, status); rep_end(s);
     } else if (cmd == 0x17) {                        /* which slots hold a config: a bit mask */
         u32 i, mask = 0;
@@ -1775,6 +1983,27 @@ static void request(struct state *s)                 /* main loop: one pending r
         } else if (!save_write(s, s->cfgp)) status = 3;
         else { s->saved = 1; s->dirty = 0; }
         rep_start(s, 0x53); rep_byte(s, status); rep_end(s);
+    } else if (cmd == 0x1D) {                        /* raw pad capture: mask (3 x 7 bits, LSB first), period in ms (1..127); a zero mask stops it */
+        u32 mask = s->stage[0] | (u32)s->stage[1] << 7 | (u32)(s->stage[2] & 3) << 14, per = s->stage[3];
+        if (s->req_err || per < 1) status = 1;
+        else {
+            s->cap_mask = 0;
+            CAP[0] = CAP_MAGIC; CAP[1] = 0; CAP[3] = mask; CAP[2] = 2;
+            { u32 k; for (k = 0; k < 16; k++) if (mask >> k & 1) CAP[2] += 2; }
+            s->cap_period = (u8)per; s->cap_t = (u16)(MS16 - per); s->cap_mask = (u16)mask;
+        }
+        rep_start(s, 0x5D); rep_byte(s, status); rep_end(s);
+    } else if (cmd == 0x1C) {                        /* HAL: which of our own drivers replace the stock ones (hal.c); RAM only */
+        rep_start(s, 0x5C); rep_byte(s, s->req_err ? 1 : 0); if (!s->req_err) hal_set(s, s->req_arg, s->stage[1], s->stage[0]); rep_byte(s, s->hal);
+        rep_byte(s, s->hal_ok & 0x7F); rep_byte(s, (s->hal_ok >> 7) & 0x7F); rep_byte(s, s->hal_ok >> 14);       /* the LED bursts so far: acknowledged ... */
+        rep_byte(s, s->hal_fail & 0x7F); rep_byte(s, (s->hal_fail >> 7) & 0x7F); rep_byte(s, s->hal_fail >> 14);  /* ... and not */
+        rep_byte(s, s->strip_ok & 0x7F); rep_byte(s, (s->strip_ok >> 7) & 0x7F); rep_byte(s, s->strip_ok >> 14);   /* the strip read cycles */
+        rep_byte(s, s->strip_fail & 0x7F); rep_byte(s, (s->strip_fail >> 7) & 0x7F); rep_byte(s, s->strip_fail >> 14);
+        rep_byte(s, s->hal2); rep_byte(s, s->own_init); rep_byte(s, s->own_usb);
+        rep_end(s);
+    } else if (cmd == 0x1F) {                        /* HANG (the watchdog test): confirmed, then the next tick stops */
+        rep_start(s, 0x5F); rep_byte(s, s->req_err ? 1 : 0); rep_end(s);
+        if (!s->req_err) s->cap_hang = 1;
     } else if (cmd == 0x1E) {
         u32 addr = 0, len = s->stage[5], i;
         const volatile u8 *p;
@@ -1959,10 +2188,45 @@ static void clock_tick(struct state *s)
 /* The stock startup plays an LED fade-in and ends (countdown 0) by clearing every LED without looking at the LED buffer again, so
  * whatever was shown before that, the resting state included, is gone. Once the countdown is 0 the shadow is written out once more.
  * This is also the place for work that must not run in an interrupt. */
-void mmk3_tick(void)
+/* The DFU gesture, the guard's "healthy" mark and the watchdog test. */
+#define BTN_DOWN(s, k) (((s)->btn[(k) >> 3] >> ((k) & 7)) & 1)
+static void safety_tick(struct state *s)
+{
+    u16 now = MS16;
+    if (s->cap_hang) { __asm volatile("cpsid i"); for (;;) { } }          /* HANG: stop until the watchdog resets the chip */
+    if (!s->healthy) {
+        if (!s->run_t0) s->run_t0 = now ? now : 1;
+        else if ((u16)(now - s->run_t0) >= HEALTHY_MS) { GUARD[1] = 0; GUARD[2] = ~0u; s->healthy = 1; }
+    }
+    if (s->gest == 2) { if ((u16)(now - s->gest_t0) >= 300) enter_dfu(); return; }    /* the message is on the screen: go */
+    if (!(BTN_DOWN(s, 25) && BTN_DOWN(s, 24) && BTN_DOWN(s, 19))) { s->gest = 0; return; }   /* Shift + Stop + Erase */
+    if (!s->gest) { s->gest = 1; s->gest_t0 = now; }
+    else if ((u16)(now - s->gest_t0) >= 2000) { s->gest = 2; s->gest_t0 = now; announce_text(s, T_DFU, T_FLASHTOLEAVE); }
+}
+
+/* Raw pad capture (stage-1 recon): every cap_period ms, a frame of the millisecond counter and the raw 12-bit ADC values of the channels in
+ * cap_mask (the stock DMA buffer, in its scan order) goes into the free RAM at CAP_BASE, until it is full; the host reads it with PEEK. */
+static void cap_tick(struct state *s)
+{
+    u16 now = MS16;
+    u32 size = 2, k, frames = CAP[1];
+    volatile u16 *f;
+    if ((u16)(now - s->cap_t) < s->cap_period) return;
+    s->cap_t = now;
+    for (k = 0; k < 16; k++) if (s->cap_mask >> k & 1) size += 2;
+    if (CAP_BASE + 16 + (frames + 1) * size > CAP_END) { s->cap_mask = 0; return; }
+    f = (volatile u16 *)(CAP_BASE + 16 + frames * size);
+    *f++ = now;
+    for (k = 0; k < 16; k++) if (s->cap_mask >> k & 1) *f++ = ADC_RAW[k];
+    CAP[1] = frames + 1;
+}
+
+static void tick_body(void);
+void mmk3_tick(void) { tick_body(); }
+static void tick_body(void)
 {
     struct state *s = ST;
-    ((void (*)(void))0x08005415)();                 /* the stock call this replaces */
+    IWDG_KR = 0xAAAAu;                               /* the watchdog kick (the stock call this hook replaces did only this) */
     if (!COUNTDOWN && !s->started) {
         s->started = 1; s->vdirty = 1;
         if (s->lit) led_flush();
@@ -1971,6 +2235,7 @@ void mmk3_tick(void)
     if (s->seq_save && !s->reply_len) { u32 ok = pat_write(s); s->seq_save = 0; if (ok) s->seq_dirty = 0; announce_text(s, T_PATTERNS, ok ? T_SAVED : T_ERROR); }
     if (s->slot_req && !s->req && !s->reply_len) { u8 r = s->slot_req; s->slot_req = 0; slot_do(s, r); }
     if (s->reply_len) reply_pump(s);
+    else if (s->reboot && ++s->reboot > 50) { __asm volatile("dsb"); AIRCR = 0x05FA0004u; for (;;) { } }   /* (a few passes after the reply went out) */
     if (s->panic) panic_pump(s);
     if (s->log_req && !s->reply_len) {
         u8 r = s->log_req;
@@ -1978,7 +2243,8 @@ void mmk3_tick(void)
         if (r & 1) log_append(s, LOG_KIND_CURVE, s->cfgp->vel_curve);
         if (r & 2) log_append(s, LOG_KIND_CHANNEL, s->cfgp->channel & 15);
     }
-    if (s->started) { clock_tick(s); disp_tick(s); }
+    if (s->started) { clock_tick(s); disp_tick(s); safety_tick(s); }
+    if (s->cap_mask) cap_tick(s);
 }
 
 /* ---- host -> device hook: replaces `bl 0x08008798` in the EP1 OUT callback (0x08004a4c) --- */
@@ -2017,7 +2283,7 @@ static void sysex_done(void)
     } else if (b[3] == 2 && n >= 4 + 80) {
         for (i = 0; i < 80; i++) led_host_set(i, b[4 + i]);
         led_flush();
-    } else if ((b[3] >= 0x10 && b[3] <= 0x17) || b[3] == 0x1E) {
+    } else if ((b[3] >= 0x10 && b[3] <= 0x17) || (b[3] >= 0x1C && b[3] <= 0x1F)) {
         req_start(s, b + 3, n - 3);
     }
 }
@@ -2038,12 +2304,14 @@ static void sysex_feed(u8 c)
  * (colour = vel >> 2, brightness variant = vel & 3); velocity 0 or Note Off turns the LED off.
  * CC on cfg.channel: the CC number a button sends lights that button's LED.
  * Every LED message updates the shadow in ST->led[] and the whole shadow is written out (see led_flush()). */
-void mmk3_rx(void)
+static void rx_handle(void);
+void mmk3_rx(void) { rx_handle(); }                 /* (the stock OUT callback's call; usb.c calls the static one) */
+static void rx_handle(void)
 {
     const struct cfg *c = state()->cfgp;
     u32 n = RX_LEN, i, any = 0;
     if (!n || RX_BUF[0] >= 0x10) {
-        ((void (*)(void))0x08008799)();
+        ((void (*)(void))STOCK(0x08008799))();
         return;
     }
     for (i = 0; i + 4 <= n; i += 4) {
@@ -2079,3 +2347,9 @@ void mmk3_rx(void)
     }
     if (any) led_flush();
 }
+
+#include "hal.c"
+#include "usb.c"
+#ifdef NATIVE
+#include "native.c"
+#endif

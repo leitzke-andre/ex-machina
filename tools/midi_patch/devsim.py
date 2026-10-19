@@ -30,9 +30,10 @@ def bl_target(fw, addr):
 
 
 class Dev:
-    def __init__(self, fw, data, cfg=None, flash=None, model=True):
+    def __init__(self, fw, data, cfg=None, flash=None, model=True, pre=None):
         """cfg: replaces the build-time config block in flash before the boot hook runs; flash: the whole flash content (0x08000000.., 256 KB)
-        to start from instead of the image, e.g. the flash of a device that was just switched off."""
+        to start from instead of the image, e.g. the flash of a device that was just switched off; pre(dev): called just before the boot hook
+        (to set up registers or RAM the patch reads at its first instruction)."""
         self.fw = fw
         self.T_TRANS, self.T_INIT, self.T_BOOT2, self.T_RX, self.T_TICK = (bl_target(fw, a) | 1 for a in
             (0x08004036, 0x08008CF8, 0x08008CFC, 0x08004ABA, 0x08008D06))
@@ -60,8 +61,13 @@ class Dev:
             self.watchdog += 1; uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR) | 1)
         mu.hook_add(UC_HOOK_CODE, enqueue, begin=0x08008a38, end=0x08008a39)
         mu.hook_add(UC_HOOK_CODE, kick, begin=0x08005414, end=0x08005415)           # the stock watchdog kick the tick hook calls
+        def iwdg(uc, acc, a, size, v, u):
+            if v & 0xFFFF == 0xAAAA: self.watchdog += 1
+        mu.hook_add(UC_HOOK_MEM_WRITE, iwdg, begin=0x40003000, end=0x40003003)       # ... or the kick written directly (ours)
         for a in (0x08007EA3, 0x08008BAD, 0x080046B9, 0x08008799): mu.hook_add(UC_HOOK_CODE, stub, begin=a & ~1, end=(a & ~1) + 1)
+        if pre: pre(self)
         self.call(self.T_INIT)                                                       # mmk3_init: state reset, saved config loaded, descriptors repointed
+        self.watchdog = 0                                                            # (count the main loop's kicks, not the start at boot)
 
     # ---- running code ----
     def call(self, pc, count=600000, sp=0x20004000):

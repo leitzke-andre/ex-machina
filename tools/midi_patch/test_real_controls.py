@@ -8,6 +8,7 @@ import os, sys
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, os.path.join(HERE, '..')); sys.path.insert(0, HERE)
 import hid_capture as H
 import build_patch as bp
+import mmk3_config as mc
 from replay import Replay
 log = sys.argv[3] if len(sys.argv) > 3 else os.path.join(HERE, 'fixtures', 'stock_controls_capture.txt')
 ok = True
@@ -40,6 +41,7 @@ for ms, buf in rows:
             bits = [(body[k >> 3] >> (k & 7)) & 1 for k in range(40)] + [body[5] & 1]
             for k in range(41):
                 if bits[k] == bits_prev[k]: continue
+                if k == mc.BTN_PROJECT: continue                     # Project always loads the next preset slot: no MIDI
                 if k in REALTIME:
                     if bits[k]: exp.append((REALTIME[k], 0, 0))        # on press only
                 else: exp.append((0xB0, NI_CC[k], 127 if bits[k] else 0))
@@ -87,7 +89,7 @@ note_ons = [m[1] for m in flat_got if m[0] == 0x90]
 check(f'pads 1..16 played in numbered order give notes {BASE}..{BASE + 15} in that order (then one stray hit on pad 8 = note {BASE + 7})', note_ons, list(range(BASE, BASE + 16)) + [BASE + 7])
 ccs = [(m[1], m[2]) for m in flat_got if m[0] == 0xB0]
 presses = [n for n, v in ccs if v == 127 and n not in (1, 7)]
-order = [38, 39, 40, 44, 46, 48, 45, 47, 41, 42, 49, 50, 51, 52, 34, 35, 36, 37, 53, 54, 55, 56, 56, 58, 43, 80, 81, 82, 84, 83, 85, 86, 87, 88, 89, 90, 91, 92]   # no 57 / 59: Play and Stop are realtime messages
+order = [39, 40, 44, 46, 48, 45, 47, 41, 42, 49, 50, 51, 52, 34, 35, 36, 37, 53, 54, 55, 56, 56, 58, 43, 80, 81, 82, 84, 83, 85, 86, 87, 88, 89, 90, 91, 92]   # no 57 / 59: Play and Stop are realtime messages; no 38: Project loads slots
 check('buttons pressed in id order, Follow twice: NI\'s CCs come out in the expected order (Chords 84 before Step 83, the NI quirk)',
       [n for n in presses if n not in (8, 9)], order)
 check('Play gives one MIDI Start and Stop one MIDI Stop, in that order, only on the press (the releases send nothing); no CC 57 / 59',

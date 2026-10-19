@@ -14,18 +14,27 @@ const V = JSON.parse(readFileSync(join(here, 'vectors.json'), 'utf8'));
 const D = M.defaultCfg(), F = M.D.FIELDS;
 const set = (cfg, name, v, i = 0) => { const c = Uint8Array.from(cfg); c[F[name][0] + i] = v; return c; };
 
+// ---- Project is fixed: the slot cycle, in every config the page makes or sends ----
+{
+  const mapped = set(set(set(set(D, 'btn_act', 0, 0), 'btn_cc', 38, 0), 'btn_act2', M.D.ACTION_NAMES.indexOf('program'), 0), 'btn_cc2', 2, 0);
+  const P0 = (c) => [c[F.btn_act[0]], c[F.btn_cc[0]], c[F.btn_act2[0]], c[F.btn_cc2[0]]];
+  const want = [M.D.ACTION_NAMES.indexOf('slot'), 8, M.D.ACTION_NAMES.indexOf('none'), 0xff];
+  check('Project fixed: the defaults, an imported config that maps it to CC 38 and what SET sends all have "next slot" (with Shift: the same)',
+    same(P0(D), want) && same(P0(P.cfgFromHex(M.hex(mapped))), want) && same(P0(M.unpack7(M.setRequest(mapped).slice(5, -1)).slice(0, M.CFG_SIZE)), want), JSON.stringify(P0(P.cfgFromHex(M.hex(mapped)))));
+}
+
 // ---- in words ----
 const d = Object.fromEntries(P.describeCfg(D).map((x) => [x.label, x.text]));
 check('describeCfg(default): transport', d.Transport === 'Play MIDI Start · Rec CC 58 · Stop MIDI Stop', d.Transport);
 check('describeCfg(default): pads', d.Pads === '1–16 play notes 36–51 (C1–D#2)', d.Pads);
-check('describeCfg(default): buttons, encoder, lighting', d.Buttons === '39 Control Changes · 2 transport messages' && d['Encoder, strip'] === 'encoder CC 7, absolute · strip CC 1 · channel 1'
+check('describeCfg(default): buttons, encoder, lighting', d.Buttons === '38 Control Changes · 2 transport messages' && d['Encoder, strip'] === 'encoder CC 7, absolute · strip CC 1 · channel 1'
   && d.Lighting === 'buttons dim at rest · buttons light when pressed · pads blue · pads flash when hit · strip white', JSON.stringify(d));
 check('describeButton: notes, MMC, none, unassigned', [
   P.describeButton(set(set(D, 'btn_act', 1, 3), 'btn_cc', 60, 3), 3) === 'note 60 (C3)',
   P.describeButton(M.defaultCfg('transport_mmc'), 22) === 'MMC play', P.describeButton(M.defaultCfg('transport_mmc'), 24) === 'MMC stop',
   P.describeButton(set(D, 'btn_act', 6, 3), 3) === 'nothing', P.describeButton(set(D, 'btn_cc', 255, 3), 3) === 'nothing'].every(Boolean));
 check('describeCfg: custom pad notes, no lighting, an unassigned button', (() => {
-  let c = set(D, 'pad_note', 99, 12); c = set(c, 'led_flags', 0); c = set(c, 'btn_cc', 255, 0);
+  let c = set(D, 'pad_note', 99, 12); c = set(c, 'led_flags', 0); c = set(c, 'btn_cc', 255, 1);
   const x = Object.fromEntries(P.describeCfg(c).map((y) => [y.label, y.text]));
   return /^custom notes: /.test(x.Pads) && x.Lighting === 'off (only what apps send)' && /1 unassigned/.test(x.Buttons);
 })());
@@ -46,7 +55,7 @@ const make = (storage) => new P.PresetStore({ storage, now: () => ++t, newId: ()
 const st = memory(); let s = make(st);
 check('the built-in presets: "Default" is the default configuration, "Groove Rider 2" differs from it in exactly the documented places',
   s.list().length === M.D.BUILTIN_PRESETS.length && s.list()[0].id === 'default' && s.list()[0].builtin && M.equal(s.get('default').cfg, D) && s.list()[1].id === 'maschine-modes' && s.list()[2].id === 'groove-rider-2'
-  && same(P.diffCfg(D, s.get('groove-rider-2').cfg), ['Erase: CC 54 → CC 120', 'Shift: CC 43 → Shift', 'Scene with Shift: as without Shift → load slot 1', 'Pattern with Shift: as without Shift → load slot 2', 'Events with Shift: as without Shift → load slot 3', 'Variation with Shift: as without Shift → load slot 4', 'Encoder Touch: CC 9 → nothing', 'Encoder CC: 7 → 20', 'Encoder mode: absolute → relative', 'Strip CC: 1 → 74']), JSON.stringify(P.diffCfg(D, s.get('groove-rider-2').cfg)));
+  && same(P.diffCfg(D, s.get('groove-rider-2').cfg), ['Erase: CC 54 → CC 120', 'Encoder Touch: CC 9 → nothing', 'Encoder CC: 7 → 20', 'Encoder mode: absolute → relative', 'Strip CC: 1 → 74']), JSON.stringify(P.diffCfg(D, s.get('groove-rider-2').cfg)));
 const a = s.add({ name: 'Mine', description: ' my setup ', cfg: set(D, 'channel', 2) });
 check('add: a user preset with trimmed description, stored', a.id === 'u-1' && a.description === 'my setup' && !a.builtin && st.raw.has(P.STORAGE_KEY));
 const b = s.add({ name: 'mine', cfg: set(D, 'channel', 3) });

@@ -2,15 +2,18 @@
 # Build the patched image from the stock firmware and run every emulator test.
 # Usage: run_tests.sh <stock fw.bin (0x9dc8 bytes)> [workdir]
 # Needs: clang with the ARM target, python venv with `unicorn pyelftools usb-protocol` installed.
-set -e
+set -e; set -o pipefail                   # (a failing suite stops the run: every test exits 1 on a failure)
 STOCK="$1"; WORK="${2:-$(mktemp -d)}"; mkdir -p "$WORK"; HERE="$(cd "$(dirname "$0")" && pwd)"; PY="${PYTHON:-python3}"
 "$PY" "$HERE/../decompress_data.py" "$STOCK" "$WORK/data_init.bin"
 "$PY" "$HERE/build_patch.py" "$STOCK" "$WORK/patched.bin"
 "$PY" "$HERE/build_patch.py" "$STOCK" "$WORK/stage1.bin" --stage 1
 "$PY" "$HERE/build_patch.py" "$STOCK" "$WORK/stage2.bin" --stage 2
-for t in test_translate test_patch test_features test_modes test_phase2 test_phase3 test_phase4 test_phase5 test_display_race test_config test_mmk3_config test_enumeration test_pad_pipeline test_real_pads test_real_controls stack_depth; do
+"$PY" "$HERE/build_patch.py" "$STOCK" "$WORK/native.bin" --native
+for t in test_translate test_hal_led test_hal_disp test_hal_btn test_hal_strip test_hal_strip_start test_hal_pads test_hal_reports test_hal_colour test_hal_loop test_hal_init test_hal_settings test_hal_stage2 test_hal_usb test_patch test_features test_modes test_phase2 test_phase3 test_phase4 test_phase5 test_safety test_display_race test_config test_mmk3_config test_enumeration test_pad_pipeline test_real_pads test_real_controls stack_depth; do
   echo "== $t"; "$PY" "$HERE/$t.py" "$WORK/patched.bin" "$WORK/data_init.bin" | tail -3
 done
+echo "== test_native (the standalone image, no NI code: boot, LED chips, strip, settings, USB, SysEx)"
+"$PY" "$HERE/test_native.py" "$WORK/native.bin" | tail -3
 echo "== test_led_race (random interleavings of an LED burst with the stock main loop)"
 "$PY" "$HERE/test_led_race.py" "$WORK/patched.bin" "$WORK/data_init.bin" 150 | tail -3
 echo "== test_startup (the real stage-2 init and main loop through the stock startup animation, patched vs stock)"

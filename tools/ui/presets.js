@@ -15,7 +15,7 @@ export function cfgFromHex(hex) {
   const raw = M.fromHex(hex.toLowerCase());
   if (raw.length < 4 || raw.length > M.CFG_SIZE) return null;
   const cfg = M.defaultCfg(); cfg.set(raw);
-  return M.check(cfg) === null ? cfg : null;
+  return M.check(cfg) === null ? M.fixProject(cfg) : null;
 }
 
 // ---- in words ----
@@ -38,7 +38,7 @@ export function describeButton(cfg, id, layer = 0) {
   if (a === 'strip') return `strip: ${['configured CC', 'pitch bend', 'mod wheel', 'strum notes'][p] ?? 'configured CC'}`;
   if (a === 'enctgt') return `encoder drives target ${p + 1}`;
   if (a === 'channel') return p === 1 ? 'previous MIDI channel' : 'next MIDI channel';
-  if (a === 'slot') return p > 7 ? 'nothing' : p > 3 ? `store in slot ${p - 3}` : `load slot ${p + 1}`;
+  if (a === 'slot') return p === 8 ? 'load the next slot' : p > 7 ? 'nothing' : p > 3 ? `store in slot ${p - 3}` : `load slot ${p + 1}`;
   if (a === 'step') return 'step sequencer mode';
   if (a === 'seqrun') return p === 1 ? 'sequencer restart' : 'sequencer start / stop';
   if (a === 'seqsel') return 'sequencer: select track (hold)';
@@ -92,7 +92,7 @@ export function describeCfg(cfg) {
   const notes = padNotes(cfg);
   out.push({ label: 'Pads', text: consecutive(notes) ? `1–16 play notes ${notes[0]}–${notes[15]} (${M.noteName(notes[0])}–${M.noteName(notes[15])})` : `custom notes: ${notes.join(', ')}` });
   const kinds = {};
-  for (let id = 0; id < 41; id++) { const k = buttonKind(cfg, id); kinds[k] = (kinds[k] || 0) + 1; }
+  for (let id = 0; id < 41; id++) { if (id === M.BTN_PROJECT) continue; const k = buttonKind(cfg, id); kinds[k] = (kinds[k] || 0) + 1; }   // (Project is fixed: the slot cycle)
   const parts = [];
   if (kinds.cc) parts.push(plural(kinds.cc, 'Control Change', 'Control Changes'));
   if (kinds.note) parts.push(plural(kinds.note, 'note', 'notes'));

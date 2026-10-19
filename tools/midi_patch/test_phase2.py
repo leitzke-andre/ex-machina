@@ -177,7 +177,8 @@ check('a SET deselects the target: the encoder is the configured one again (abso
 # ---- Program Change ---------------------------------------------------------------------------------------------------------------------------
 d = Dev(cfg(channel=2))
 PC = lambda n, ch=2: (0x0C, 0xC0 | ch, n, 0)
-check('Favorites = next program: 1, 2; Browser = previous: 1; Project = back to 0 (sent)', [tap(d, 'Favorites')[0], tap(d, 'Favorites')[0], tap(d, 'Browser')[0], tap(d, 'Project')[0]], [[PC(1)], [PC(2)], [PC(1)], [PC(0)]])
+def shift_out(d, name): o = press(d, 'Shift', name); release(d); return o
+check('Favorites = next program: 1, 2; Browser = previous: 1; Shift + Browser = back to 0 (sent)', [tap(d, 'Favorites')[0], tap(d, 'Favorites')[0], tap(d, 'Browser')[0], shift_out(d, 'Browser')], [[PC(1)], [PC(2)], [PC(1)], [PC(0)]])
 check('previous from 0 wraps to 127, next from 127 wraps to 0', (tap(d, 'Browser')[0], tap(d, 'Favorites')[0]), ([PC(127)], [PC(0)]))
 check('nothing on release', (press(d, 'Favorites') != [], release(d)), (True, []))
 

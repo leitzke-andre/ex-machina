@@ -32,6 +32,7 @@ export async function buildImage(stock, bundle) {
   img.set(stock);
   for (const e of bundle.edits) img.set(Uint8Array.from(e.hex.match(/../g), (h) => parseInt(h, 16)), e.offset);
   img.set(tail, bundle.tail_offset);
+  for (const c of bundle.copies || []) img.set(stock.slice(c.stock_offset, c.stock_offset + c.length), c.offset);   // NI's own tables, from the user's image
   if (img.length !== bundle.result_len || (await sha256Hex(img)) !== bundle.result_sha256) throw new Error('the patched image does not match its checksum; not using it');
   return img;
 }

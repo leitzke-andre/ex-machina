@@ -88,7 +88,16 @@ export const STATUS = { 0: 'ok', 1: 'wrong length', 2: 'value out of range', 3: 
 export const message = (cmd, payload = []) => Uint8Array.from([0xf0, ...MANUFACTURER, cmd, ...payload, 0xf7]);
 export const infoRequest = () => message(CMD.INFO);
 export const getRequest = () => message(CMD.GET);
-export const setRequest = (cfg) => message(CMD.SET, pack7(cfg));
+/** Project (top left) always loads the next preset slot, with and without Shift: the firmware sets it on every config it takes (cfg_fixed() in
+ *  translate.c), so every config made here carries it too (mmk3_config.fix_project). Returns a copy. */
+export const BTN_PROJECT = 0;
+export function fixProject(cfg) {
+  const c = Uint8Array.from(cfg), F = D.FIELDS;
+  c[F.btn_act[0] + BTN_PROJECT] = D.ACTION_NAMES.indexOf('slot'); c[F.btn_cc[0] + BTN_PROJECT] = 8;
+  c[F.btn_act2[0] + BTN_PROJECT] = D.ACTION_NAMES.indexOf('none'); c[F.btn_cc2[0] + BTN_PROJECT] = 0xff;   // with Shift: the same
+  return c;
+}
+export const setRequest = (cfg) => message(CMD.SET, pack7(fixProject(cfg)));
 export const saveRequest = () => message(CMD.SAVE);
 /** Characters of a preset's display name: what the screen's detail line shows whole (6 pixels each from x = 4). */
 export const NAME_MAX = 20;

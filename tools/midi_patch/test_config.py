@@ -81,6 +81,7 @@ for label, cfg in (('btn_cc 0xFF', mutate('btn_cc', 3, 0xFF)), ('pad_led 0xFF', 
     if r.get('status') != 0: wrong.append((label, r))
 check('the allowed edge values (0xFF for "none", sens 100, pad_led 79) are accepted', wrong, [])
 
+def raw_set(c): return mc.message(mc.CMD_SET, mc.pack7(bytes(c)))   # as sent, without the tools' fix_project
 rng = random.Random(20261018)
 disagree = []
 for n in range(120):
@@ -89,9 +90,15 @@ for n in range(120):
         off = rng.randrange(4, mc.CFG_SIZE)
         if off in (93, 94): continue
         c[off] = rng.choice((rng.randrange(256), 0xFF, 0, 127, 128, rng.randrange(20)))
-    r = reply(d, mc.set_request(bytes(c))); want = mc.check(bytes(c))
+    r = reply(d, raw_set(c)); want = mc.check(bytes(c))
     if (want is None) != (r.get('status') == 0) or (want is not None and r.get('offset') != want): disagree.append((c.hex(), r, want))
 check('120 random single / multi byte mutations: the device and the host library agree on accept / refuse and on the offset', disagree, [])
+P0 = lambda c: tuple(c[F[f][0] + mc.BTN_PROJECT] for f in ('btn_act', 'btn_cc', 'btn_act2', 'btn_cc2'))
+c = bytearray(DEFAULTS); c[F['btn_act'][0]] = mc.ACT_CC; c[F['btn_cc'][0]] = 38; c[F['btn_act2'][0]] = mc.ACT_PROGRAM; c[F['btn_cc2'][0]] = 2
+r = reply(d, raw_set(c)); got = mc.parse_reply(d.ask(mc.get_request())[0])['cfg']
+check('Project is fixed: a SET that maps it to CC 38 (Shift: Program 0) is accepted, and GET shows it as "next slot" (with Shift: the same), the rest as sent',
+      (r.get('status'), P0(got), bytes(got) == mc.fix_project(c)), (0, (mc.ACT_SLOT, 8, mc.ACT_NONE, 0xFF), True))
+check('... and the tools never send anything else for it (set_request carries the fix)', mc.unpack7(mc.set_request(c)[5:-1])[:mc.CFG_SIZE] == mc.fix_project(c), True)
 
 # ---- SET: wrong length, busy, startup ----
 d = Dev()
@@ -106,7 +113,7 @@ check('a second request while one is pending is ignored (the host asks again): o
 d = Dev(); d.send_sysex(mc.info_request()); d.all_sent.clear(); d.tick(3000)
 check('requests are served during the stock startup too (countdown still running)', [m[4] for m in devsim.sysex_messages(d.all_sent)], [0x50])
 d = Dev()
-check('foreign and malformed SysEx are ignored', (d.ask(bytes([0xF0, 0x7D, 0x4D, 0x4B, 0x1F, 0xF7])), d.ask(bytes([0xF0, 0x41, 0x10, 0xF7])), d.ask(bytes([0xF0, 0x7D, 0x4D, 0xF7]))), ([], [], []))
+check('foreign and malformed SysEx are ignored (an unknown command, 0x1B)', (d.ask(bytes([0xF0, 0x7D, 0x4D, 0x4B, 0x1B, 0xF7])), d.ask(bytes([0xF0, 0x41, 0x10, 0xF7])), d.ask(bytes([0xF0, 0x7D, 0x4D, 0xF7]))), ([], [], []))
 
 # ---- the reply goes through the stock ring only as far as it has room ----
 RING_W, RING_R = devsim.RING_W, devsim.RING_R
@@ -189,11 +196,11 @@ d7 = Dev(flash=bytes(junk)); reply(d7, mc.set_request(new)); r = reply(d7, mc.sa
 check('a page full of junk is erased and rewritten by SAVE', (r['status'], d7.page()[:mc.REC_SIZE] == mc.build_record(new), d7.flash.erases, d7.flash.violations), (0, True, [bp.SAVE_PAGE], []))
 
 # ---- an older, shorter record only overlays the fields it has ----
-old_cfg = bytearray(DEFAULTS); old_cfg[F['btn_cc'][0]] = 99; old_cfg[F['btn_cc'][0] + 40] = 98       # byte 61: beyond the first 100 bytes
+old_cfg = bytearray(DEFAULTS); old_cfg[F['btn_cc'][0]] = 99; old_cfg[F['btn_act'][0]] = mc.ACT_CC; old_cfg[F['btn_cc'][0] + 1] = 97; old_cfg[F['btn_cc'][0] + 40] = 98   # byte 61: beyond the first 100 bytes
 page = struct.pack('<IHHHH', mc.REC_MAGIC, mc.REC_VERSION, 100, mc.crc16(bytes(old_cfg[:100])), 0xFFFF) + bytes(old_cfg[:100]) + bytes(52)
 cfg, info = booted(page)
-want = bytearray(DEFAULTS); want[:100] = old_cfg[:100]
-check('a record of 100 bytes overlays the first 100 bytes of the defaults (fields added later keep their defaults)', (cfg, info['saved']), (bytes(want), True))
+want = bytearray(DEFAULTS); want[:100] = old_cfg[:100]; want = mc.fix_project(want)
+check('a record of 100 bytes overlays the first 100 bytes of the defaults (fields added later keep their defaults; Project, CC 99 in the record, is the slot cycle)', (cfg, info['saved']), (bytes(want), True))
 check('the host library agrees (parse_record)', mc.parse_record(page), bytes(want))
 
 # ---- a save that is cut short at every point never leaves anything but the old config, the defaults, or the new config ----
@@ -272,7 +279,7 @@ check('PEEK the FLASH registers as whole words (36 bytes) and the chip ID',
       (peek(0x40022000, 36)['status'], peek(0xE0042000, 4)['status'], peek(0xE000ED00, 4)['status']), (0, 0, 0))
 check('PEEK 1 byte at the end of RAM, and the last 2 bytes of the flash', (peek(0x20004FFF, 1)['status'], peek(0x0801FFFE, 2)['status']), (0, 0))
 for what, addr, n in (('address 0', 0, 4), ('the first byte after the flash', 0x08020000, 4), ('a range crossing the end of the flash', 0x0801FFFF, 2), ('a range crossing the end of RAM', 0x20004FFF, 2),
-                      ('a peripheral that is not whitelisted (USB registers)', 0x40005C00, 4), ('a register read that is not word aligned', 0x40022001, 4), ('a register read of 3 bytes', 0x40022000, 3), ('an address that would wrap around', 0xFFFFFFF0, 64), ('the stack pointer register area', 0xE000ED08, 4)):
+                      ('a peripheral that is not whitelisted (USART1)', 0x40013800, 4), ('a register read that is not word aligned', 0x40022001, 4), ('a register read of 3 bytes', 0x40022000, 3), ('an address that would wrap around', 0xFFFFFFF0, 64), ('the software trigger interrupt register area', 0xE000EF00, 4)):
     check(f'PEEK refuses {what} (status 1)', peek(addr, n)['status'], 1)
 check('PEEK refuses length 0 and 65 (status 2) and a malformed request (status 2)',
       (peek(0x20000000, 0)['status'], peek(0x20000000, 65)['status'], mc.parse_reply(d.ask(mc.message(mc.CMD_PEEK, bytes([0, 0, 0, 0, 0])))[0])['status']), (2, 2, 2))

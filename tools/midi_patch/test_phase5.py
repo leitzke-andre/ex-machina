@@ -71,7 +71,7 @@ x = T(g); a, r = x.tap('Select'); check('the other way round: global trigger, Se
 a, r = x.tap('Solo'); check('... the others stay trigger', (a, r), ([CC(solo_cc, 127)], []))
 
 # ---- pad pages -------------------------------------------------------------------------------------------------------------------------------------
-c = act(mc.default_cfg(), 'Right', mc.ACT_PAGE, 0); c = act(c, 'Left', mc.ACT_PAGE, 1); c = act(c, 'Project', mc.ACT_PAGE, 2)
+c = act(mc.default_cfg(), 'Right', mc.ACT_PAGE, 0); c = act(c, 'Left', mc.ACT_PAGE, 1); c = act(c, 'Favorites', mc.ACT_PAGE, 2)
 x = T(c); sc = Screen(x.d); sc.settle()
 check('page 1: pad 1 = note 36, pad 16 = note 51', (x.note(1), x.note(16)), (36, 51))
 x.tap('Right'); sc.run(4, 10)
@@ -81,7 +81,7 @@ for _ in range(6): x.tap('Right')
 check('after 7 steps: page 8 (pad 1 = 148 would pass 127: the note stays in range)', 0 <= x.note(1) <= 127, True)
 x.tap('Right'); check('one more wraps to page 1', x.note(1), 36)
 x.tap('Left'); check('Left from page 1 goes to page 8', x.note(1) is not None and x.note(1) >= 0, True)
-x.tap('Project'); check('parameter 2 goes back to page 1', x.note(1), 36)
+x.tap('Favorites'); check('parameter 2 goes back to page 1', x.note(1), 36)
 t = act(act(c, 'Keyboard', mc.ACT_KEYS), 'Pad Mode', mc.ACT_PADMODE)
 x = T(t); x.tap('Right'); x.tap('Keyboard')
 check('the Keyboard layout does not move with the page (pad 1 = the root)', x.note(1), 60)
