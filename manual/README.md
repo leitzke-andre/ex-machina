@@ -23,6 +23,7 @@ This manual is for **using** the firmware and the flashing tools. The design not
 | 7 | [Flashing and recovery](07-flashing.md) | Installing the firmware from the browser or the command line, restoring NI's firmware, getting out of trouble |
 | 8 | [Command line](08-command-line.md) | `mmk3_config.py`: the same configuration from a terminal |
 | 9 | [MIDI reference](09-midi-reference.md) | What the controller sends and what it listens to (notes, CCs, LEDs, the screen, SysEx) |
+| 10 | [FL Studio](10-fl-studio.md) | The Ex-Machina script for FL Studio: transport, channels, step sequencer, patterns, mixer, plug-ins on the controller |
 
 ## At a glance
 - **Plug and play**: one USB-MIDI port, the usual General MIDI drum notes on the pads (36-51), CCs on the buttons, CC 7 on the encoder, CC 1 on the strip.

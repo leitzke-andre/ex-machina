@@ -20,6 +20,7 @@ The patch is tested without hardware in an emulator (Unicorn, running the real s
 | Path | What |
 |---|---|
 | `tools/midi_patch/` | the patch (`translate.c`), the image builder, the host-side config library / CLI (`mmk3_config.py`), and the emulator tests (`run_tests.sh`) |
+| `integrations/fl_studio/` | the FL Studio device script (`docs/fl-studio.md`, manual chapter 10) and its tests |
 | `tools/ui/` | the browser tool: mapping editor, presets, flashing and restoring the firmware (Web MIDI + WebUSB; Chrome or Edge) |
 | `tools/emu/` | the Unicorn machine, USB and flash models |
 | `flasher/` | self-contained DFU client for the NI bootloader (Python + WebUSB port), the guarded flash script, its tests and the protocol notes; could be its own project |
@@ -30,7 +31,7 @@ The patch is tested without hardware in an emulator (Unicorn, running the real s
 | `proprietary/` | **not committed** (see `.gitignore`): NI's manual, updaters, installer image and the unmodified stock firmware, kept locally for the build and the restore path |
 | `CLAUDE.md` | working notes for the AI assistant used on this project (commands, constraints) |
 
-To use the firmware, read the **[user manual](manual/README.md)**. For the design, start with `docs/midi-patch.md` (design and features), `docs/ui.md` (the browser tool) and `docs/remap-protocol.md` (SysEx protocol).
+To use the firmware, read the **[user manual](manual/README.md)**. For the design, start with `docs/midi-patch.md` (design and features), `docs/ui.md` (the browser tool), `docs/remap-protocol.md` (SysEx protocol) and `docs/fl-studio.md` (the FL Studio script).
 
 ## Getting started
 ```

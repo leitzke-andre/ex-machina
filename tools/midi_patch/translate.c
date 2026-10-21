@@ -276,7 +276,16 @@ struct state {              /* RAM above the firmware's stack, zeroed by mmk3_in
     u8 seq_sn[16];          /* the note each sounding sequencer track started (its Note Off uses it, whatever the config says by then) */
     u8 bent;                /* a pitch bend away from the centre was sent */
     u8 bend_pend;           /* 0x80 | channel: the centre is still to be sent there (strip mode, channel, panic or config changed while bent) */
+    /* Host mode (SysEx 20 HOST, 21 TEXT, docs/remap-protocol.md): a DAW script draws text on the screen and reads the pads as a grid. Run-time only:
+     * power-up, and a SET / RESET / slot load from the host end it (the Project button's slot change does not: the script is still there). */
+    u8 host;                /* HOST_* flags */
+    u8 hgen;                /* bumped by every TEXT: the host's picture is drawn again */
+    u16 rawheld;            /* pads (report index) whose Note On went out as a grid note; their Note Off follows whatever the flags say by then */
+    char htext[4][21];      /* the host's four text lines, 21 characters each (0 = blank) */
 };
+#define HOST_SCREEN 1u      /* the picture behind the messages is the host's text, not the idle screen / sequencer grid */
+#define HOST_RAW 2u         /* every pad sends note 36 + its number - 1 (pad 1 = 36 ... pad 16 = 51) whatever the pad mode, arp, mute / solo or sequencer */
+#define HOST_QUIET 4u       /* no messages of the firmware's own on the screen */
 #define ST_ADDR 0x20004200u
 #define ST ((struct state *)ST_ADDR)
 #define ST_MAGIC 0x4D4D4B33u
@@ -564,6 +573,7 @@ static void m_begin(struct state *s, u32 title)           /* a new message: the 
 }
 static void m_show(struct state *s)                       /* ... ready: (re)start showing it */
 {
+    if (s->host & HOST_QUIET) return;                     /* (the host shows its own) */
     s->dstate = D_MSG0;
 }
 
@@ -905,6 +915,7 @@ static void view_notes(struct state *s)                   /* the detail line of 
 static u32 view_sig(const struct state *s)
 {
     u32 v = (u32)s->padmode | (u32)(s->cfgp->channel & 15) << 2 | (u32)s->arp_on << 6 | (u32)s->clock_out << 7 | (u32)s->bpm << 8;
+    if (s->host & HOST_SCREEN) return 0x80000000u | (u32)s->hgen << 8 | s->host;      /* (the host's picture: only its text counts) */
     if (s->padmode == 3 || s->seq_on) v |= (u32)s->seq_cur << 17 | (u32)s->seq_trk << 22 | (u32)s->seq_pat << 26 | (u32)s->seq_on << 28 | (u32)(s->vgen & 7) << 29;
     return v;
 }
@@ -935,7 +946,13 @@ static u32 col_seq(const struct state *s, u32 x)           /* the sequencer grid
     else if (!(step & 3) && (c == 3 || c == 4)) m |= 3u << 29;
     return m;
 }
-static u32 col_view(const struct state *s, u32 x) { return s->padmode == 3 ? col_seq(s, x) : col_idle(s, x); }
+static u32 col_host(const struct state *s, u32 x)          /* the host's text: line n on rows 8n..8n+6, 21 cells of 6 pixels from x = 1 */
+{
+    u32 l, m = 0;
+    for (l = 0; l < 4; l++) m |= text_col(s->htext[l], 21, x, 1) << (8 * l);
+    return m;
+}
+static u32 col_view(const struct state *s, u32 x) { return (s->host & HOST_SCREEN) ? col_host(s, x) : s->padmode == 3 ? col_seq(s, x) : col_idle(s, x); }
 
 /* The mod wheel value as a bar on the 25 strip LEDs (dim); the finger LED is put back on top. Fills the shadow only. */
 static void strip_bar(struct state *s)
@@ -1322,6 +1339,13 @@ static u32 translate_report(const u8 *buf, u32 len)
                 case 0: case 1: {
                     u8 nb[CHORD_MAX], vel = hit_velocity(s, c, pad, val);
                     u32 cnt, j;
+                    if (s->host & HOST_RAW) {                    /* host mode: the pad is a cell of the host's grid */
+                        u8 rn = (u8)(36 + padnum(pad));
+                        if (s->rawheld & bit) q = note_off(s, q, ch, rn);
+                        q = note_on(s, q, ch, rn, vel); s->rawheld |= bit;
+                        if ((c->led_flags & LF_PAD_HIT) && pl < 80) { s->led[pl] = pad_code(c, 3); dirty = 1; }
+                        break;
+                    }
                     if (s->padmode == 3) { seq_pad(s, c, pad); dirty = 1; break; }       /* step mode: the pad is a step (or, with Select held, a track) */
                     if (s->padfn) {                              /* mute / solo edit: the hit toggles the pad */
                         u16 *w = s->padfn == 1 ? &s->mute : &s->solo;
@@ -1347,6 +1371,11 @@ static u32 translate_report(const u8 *buf, u32 len)
                     break;
                 }
                 case 2: case 3:
+                    if (s->rawheld & bit) {                      /* a grid note (whatever the flags are now) */
+                        q = note_off(s, q, ch, (u8)(36 + padnum(pad))); s->rawheld &= (u16)~bit;
+                        if ((c->led_flags & LF_PAD_HIT) && pl < 80) { led_rest(s, pl); dirty = 1; }
+                        break;
+                    }
                     if (s->held & bit) { u32 j; for (j = 0; j < s->cnn[pad]; j++) q = note_off(s, q, ch, s->cn[pad][j]); }
                     if (s->parp & bit) { s->parp &= ~bit; if (!s->latch) arp_drop_pad(s, pad); }
                     s->cnn[pad] = 0;
@@ -1863,6 +1892,7 @@ static void release_all(struct state *s, const struct cfg *o)
     u32 p, j, ch = o->channel & 15;
 #define RFLUSH() do { if ((u32)(q - buf) + 8 > sizeof buf) { ENQUEUE(buf, (u32)(q - buf)); q = buf; } } while (0)
     for (p = 0; p < 16; p++) if ((s->held >> p) & 1) for (j = 0; j < s->cnn[p]; j++) { RFLUSH(); q = note_off(s, q, ch, s->cn[p][j]); }
+    for (p = 0; p < 16; p++) if ((s->rawheld >> p) & 1) { RFLUSH(); q = note_off(s, q, ch, (u8)(36 + padnum((u8)p))); }
     for (p = 0; p < 41; p++) {                       /* note buttons held down, with the layer they were pressed on */
         u8 down = p < 40 ? (s->btn[p >> 3] >> (p & 7)) & 1 : s->touch, lay = (s->lay[p >> 3] >> (p & 7)) & 1;
         if (down && (lay ? o->btn_act2[p] : o->btn_act[p]) == ACT_NOTE) { RFLUSH(); q = note_off(s, q, ch, lay ? o->btn_cc2[p] : o->btn_cc[p]); }
@@ -1877,7 +1907,7 @@ static void release_all(struct state *s, const struct cfg *o)
 #undef RFLUSH
     if (q != buf) ENQUEUE(buf, (u32)(q - buf));
     for (p = 0; p < 16; p++) s->cnn[p] = 0;
-    s->held = 0; s->parp = 0; s->psent = 0; s->bent = 0; s->bend_pend = 0;
+    s->held = 0; s->rawheld = 0; s->parp = 0; s->psent = 0; s->bent = 0; s->bend_pend = 0;
     notes_forget(s);
 }
 
@@ -2031,7 +2061,7 @@ static void req_start(struct state *s, const u8 *b, u32 n)
     if (b[0] == 0x1D) { copy8(s->stage, b + 1, n > 5 ? 4 : n - 1); if (n != 5) s->req_err = 1; }
     if (b[0] == 0x1F && !(n == 5 && b[1] == 'H' && b[2] == 'A' && b[3] == 'N' && b[4] == 'G')) s->req_err = 1;
     if (b[0] == 0x12 && unpack7(s->stage, sizeof s->stage, b + 1, n - 1) != sizeof(struct cfg)) s->req_err = 1;
-    if ((b[0] == 0x15 && (n < 2 || n > 2 + NAME_MAX)) || (b[0] == 0x16 && n != 2)) s->req_err = 1;       /* the slot number is required, a store may add a name (up to 20 characters) */
+    if ((b[0] == 0x15 && (n < 2 || n > 2 + NAME_MAX)) || (b[0] == 0x16 && n != 2) || (b[0] == 0x20 && n != 2)) s->req_err = 1;       /* the slot number is required, a store may add a name (up to 20 characters) */
     if (b[0] == 0x15 && !s->req_err) {
         u32 k;
         for (k = 0; k < 24; k++) {
@@ -2041,6 +2071,17 @@ static void req_start(struct state *s, const u8 *b, u32 n)
         }
     }
     s->req = b[0];
+}
+
+/* HOST: the flags a DAW script sets (main loop). The pads change meaning when HOST_RAW changes, so nothing they hold may stay on; entering
+ * HOST_SCREEN starts from a blank picture (the host's TEXT follows). */
+static void host_set(struct state *s, u32 f)
+{
+    u32 l, k;
+    if ((f ^ s->host) & HOST_RAW) release_all(s, s->cfgp);
+    if ((f & HOST_SCREEN) && !(s->host & HOST_SCREEN)) for (l = 0; l < 4; l++) for (k = 0; k < 21; k++) s->htext[l][k] = 0;
+    s->host = (u8)f;
+    s->vdirty = 1;
 }
 
 static void request(struct state *s)                 /* main loop: one pending request, its reply goes to reply[] */
@@ -2125,6 +2166,10 @@ static void request(struct state *s)                 /* main loop: one pending r
             s->reply_len += pack7(s->reply + s->reply_len, tmp, len);
         }
         rep_end(s);
+    } else if (cmd == 0x20) {                        /* HOST <flags>: -> 60 <status> <flags now> */
+        if (s->req_err || s->req_arg > 7) status = 1;
+        else host_set(s, s->req_arg);
+        rep_start(s, 0x60); rep_byte(s, status); rep_byte(s, s->host); rep_end(s);
     } else if (cmd == 0x14) {
         cfg_commit(s, CFG_DEFAULTS);
         s->dirty = (u8)(s->saved || !log_blank());   /* different from what the next boot loads (the saved config, or the defaults plus the settings log) */
@@ -2134,6 +2179,7 @@ static void request(struct state *s)                 /* main loop: one pending r
         }
         rep_start(s, 0x54); rep_byte(s, status); rep_end(s);
     }
+    if ((cmd == 0x12 || cmd == 0x14 || cmd == 0x16) && !status && s->host) host_set(s, 0);   /* another config from the host: host mode ends */
     __asm volatile("" ::: "memory");                /* (every use of stage[] / req_arg above is done before the store below) */
     s->req = 0;                                      /* only now may the interrupt take the next one (it would overwrite stage[] before) */
 }
@@ -2375,6 +2421,8 @@ static void led_host_set(u32 idx, u8 code) { ST->led[idx] = code; ST->base[idx] 
  *   cmd 01  display region: x page w-1 h-1 <7-bit packed pixel bytes, w*h of them>
  *           x 0..127, page 0..3 (8 px rows), w 1..128, h 1..4, w*h <= 256
  *   cmd 02  LED frame: 80 bytes (LED colour codes 0..127), one per LED index
+ *   cmd 21  TEXT: line 0..3 (0x7F: all four blank), column 0..20, then up to 21 - column characters (shown while HOST_SCREEN is set)
+ *   cmd 20  HOST <flags> is a request (reply 60, main loop), see host_set()
  * 7-bit packing: groups of 8 MIDI bytes; the first holds bit 7 of the next 7 data bytes
  * (bit k -> data byte k). Regions are handed to the stock code through the same RAM buffers a
  * native 0xe0 display report / 0x80 LED report would fill, so the firmware does the rest. */
@@ -2399,7 +2447,11 @@ static void sysex_done(void)
     } else if (b[3] == 2 && n >= 4 + 80) {
         for (i = 0; i < 80; i++) led_host_set(i, b[4 + i]);
         led_flush();
-    } else if ((b[3] >= 0x10 && b[3] <= 0x17) || (b[3] >= 0x1C && b[3] <= 0x1F)) {
+    } else if (b[3] == 0x21 && n >= 5) {            /* TEXT: line (0..3, 0x7F = all lines blank) col (0..20) <characters>; drawn by the main loop */
+        u32 line = b[4], col = n > 5 ? b[5] : 0, l;
+        if (line == 0x7F) { for (l = 0; l < 4; l++) for (i = 0; i < 21; i++) s->htext[l][i] = 0; s->hgen++; }
+        else if (line < 4 && col < 21) { for (i = 6; i < n && col < 21; i++) s->htext[line][col++] = (char)b[i]; s->hgen++; }
+    } else if ((b[3] >= 0x10 && b[3] <= 0x17) || (b[3] >= 0x1C && b[3] <= 0x1F) || b[3] == 0x20) {
         req_start(s, b + 3, n - 3);
     }
 }

@@ -20,6 +20,8 @@ python3 tools/midi_patch/mmk3_config.py info
 | `slot list` | Which of the four slots hold a mapping, and their names |
 | `slot store N [NAME]` | Store the active mapping in slot *N* under a name (shown on the screen when the slot is loaded) |
 | `slot load N` | Make slot *N* active (not saved) |
+| `host [screen] [raw] [quiet]` / `host off` | Host mode, as a DAW script sets it (firmware generation 11): the screen shows the host's text, the pads send notes 36-51 whatever the pad mode, no messages of the firmware's own |
+| `text 1..4 WORDS` / `text clear` | A line of text on the screen while host mode `screen` is on |
 | `save` | Keep the active mapping across power cycles |
 | `reset [--erase]` | Back to the defaults; with `--erase` the saved mapping is erased as well |
 

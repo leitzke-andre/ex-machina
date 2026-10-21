@@ -9,9 +9,12 @@ STOCK="$1"; WORK="${2:-$(mktemp -d)}"; mkdir -p "$WORK"; HERE="$(cd "$(dirname "
 "$PY" "$HERE/build_patch.py" "$STOCK" "$WORK/stage1.bin" --stage 1
 "$PY" "$HERE/build_patch.py" "$STOCK" "$WORK/stage2.bin" --stage 2
 "$PY" "$HERE/build_patch.py" "$STOCK" "$WORK/native.bin" --native
-for t in test_translate test_hal_led test_hal_disp test_hal_btn test_hal_strip test_hal_strip_start test_hal_pads test_hal_reports test_hal_colour test_hal_loop test_hal_init test_hal_settings test_hal_stage2 test_hal_usb test_patch test_features test_modes test_phase2 test_phase3 test_phase4 test_phase5 test_safety test_display_race test_review test_config test_mmk3_config test_enumeration test_pad_pipeline test_real_pads test_real_controls stack_depth; do
+for t in test_translate test_hal_led test_hal_disp test_hal_btn test_hal_strip test_hal_strip_start test_hal_pads test_hal_reports test_hal_colour test_hal_loop test_hal_init test_hal_settings test_hal_stage2 test_hal_usb test_patch test_features test_modes test_phase2 test_phase3 test_phase4 test_phase5 test_host test_safety test_display_race test_review test_config test_mmk3_config test_enumeration test_pad_pipeline test_real_pads test_real_controls stack_depth; do
   echo "== $t"; "$PY" "$HERE/$t.py" "$WORK/patched.bin" "$WORK/data_init.bin" | tail -3
 done
+echo "== the FL Studio script (integrations/fl_studio: its tables are up to date; against a stand-in for FL's modules and the emulated device)"
+"$PY" "$HERE/../../integrations/fl_studio/gen_tables.py" --check
+"$PY" "$HERE/../../integrations/fl_studio/test_fl_script.py" "$WORK/patched.bin" "$WORK/data_init.bin" | tail -3
 echo "== test_native (the standalone image, no NI code: boot, LED chips, strip, settings, USB, SysEx)"
 "$PY" "$HERE/test_native.py" "$WORK/native.bin" | tail -3
 echo "== test_led_race (random interleavings of an LED burst with the stock main loop)"

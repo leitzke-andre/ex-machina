@@ -15,6 +15,8 @@ the vectors this file produces).
     mmk3_config.py pad 1 40                    pad 1 sends note 40
     mmk3_config.py hal all | none | MASK         our own hardware drivers instead of NI's (1 LEDs, 2 display, 4 buttons, 8 strip, 16 pads, 32 reports, 64 LED colours, 256 main loop, 512 SysTick; until the next power cycle)
     mmk3_config.py slot list | store N [name] | load N   the four preset slots in the device (N = 1..4): store the active config under a name (shown when the slot is loaded with the buttons) / make a slot active (not saved)
+    mmk3_config.py host [screen] [raw] [quiet] | host off   host mode, as a DAW script sets it (until the next power cycle, SET, RESET or slot load)
+    mmk3_config.py text 1..4 WORDS | text clear           a line of text on the screen while host mode 'screen' is on
     mmk3_config.py save | reset [--erase]      keep the active config across power cycles | back to the defaults
     mmk3_config.py preset list [FILE]          the built-in presets (and those in a preset file)
     mmk3_config.py preset apply NAME [FILE] [--save]   send a preset (by id or name; from FILE if it is not built in), optionally keep it
@@ -260,6 +262,15 @@ HAL_FLAG_LED_INIT, HAL_FLAG_NEXT_BOOT, HAL_FLAG_REBOOT, HAL_FLAG_NEXT_BOOT_USB =
 HAL2_LOOP, HAL2_TICK = 0x01, 0x02                     # the second mask byte: our main-loop work, our SysTick handler
 HAL2_ALL = 0x03
 def hal_request(mask, flags=0, mask2=0): return message(CMD_HAL, bytes([mask & 0x7F]) + (bytes([flags & 0x7F, mask2 & 0x7F]) if flags or mask2 else b''))
+CMD_HOST, CMD_TEXT = 0x20, 0x21                        # host mode for a DAW script (docs/remap-protocol.md): who owns the screen and the pads; text lines on the screen
+HOST_SCREEN, HOST_RAW, HOST_QUIET = 1, 2, 4            # the picture is the host's text / pads send 36 + their number - 1 whatever the mode / no firmware messages
+TEXT_COLS = 21
+def host_request(flags): return message(CMD_HOST, bytes([flags & 0x7F]))
+def text_request(line, text, col=0):
+    """Text on line 0..3 from column `col` (at most 21 - col characters; shown while HOST_SCREEN is set). line None: all four lines blank."""
+    if line is None: return message(CMD_TEXT, bytes([0x7F]))
+    t = ''.join(ch if 32 <= ord(ch) <= 126 else '?' for ch in str(text))[:TEXT_COLS - col]
+    return message(CMD_TEXT, bytes([line & 3, col]) + t.encode('ascii'))
 def peek_request(addr, length):
     """Read-only diagnostic: `length` (1..64) bytes at `addr` (flash, RAM, chip ID registers; the firmware refuses anything else)."""
     return message(CMD_PEEK, bytes((addr >> (28 - 7 * i)) & 0x7F for i in range(5)) + bytes([length]))
@@ -287,6 +298,7 @@ def parse_reply(msg):
     if cmd == CMD_HAL:
         n = lambda o: data[o] | data[o + 1] << 7 | data[o + 2] << 14 if len(data) >= o + 3 else None
         return {'cmd': cmd, 'status': data[0], 'hal': data[1] if len(data) > 1 else None, 'led_ok': n(2), 'led_fail': n(5), 'strip_ok': n(8), 'strip_fail': n(11), 'hal2': data[14] if len(data) > 14 else None, 'own_init': data[15] if len(data) > 15 else None, 'own_usb': data[16] if len(data) > 16 else None}
+    if cmd == CMD_HOST: return {'cmd': cmd, 'status': data[0], 'status_text': STATUS.get(data[0], '?'), 'host': data[1] if len(data) > 1 else None}
     if cmd in (CMD_SET, CMD_SAVE, CMD_RESET, CMD_SLOT_STORE, CMD_SLOT_LOAD, CMD_CAPTURE, CMD_HANG):
         r = {'cmd': cmd, 'status': data[0], 'status_text': STATUS.get(data[0], '?')}
         if cmd == CMD_SET and data[0] == 2: r['offset'] = data[1] | (data[2] << 7)
@@ -399,6 +411,34 @@ def _beatmaker3():
     c[FIELDS['enc_pages'][0]], c[FIELDS['enc_page_step'][0]], c[FIELDS['enc_accel'][0]] = 6, 3, 1
     return bytes(c)
 
+FL_SHIFT_CC = {'Tap': 102, 'Left': 103, 'Right': 104, 'Plug-in': 105, 'Pattern': 106, 'Step': 107, 'Browser': 108, 'Erase': 109,
+               'Play': 110, 'Encoder Push': 112}       # what these buttons send with Shift held (the FL Studio script's second layer)
+
+def _fl_studio():
+    """For the FL Studio device script (integrations/fl_studio/, docs/fl-studio.md). Every button the script uses sends NI's CC as a gate (the script sees
+    press and release, so hold-gestures work), Play and Stop too; with Shift held a few send a second CC (FL_SHIFT_CC). The playing functions stay on the
+    device, as in the preset 'Maschine-like modes': Pad Mode / Keyboard / Chords (Shift: scale and chord type), Fixed Vel (Shift: 16 Velocities), Note Repeat
+    (Shift: rate), Auto (arp octaves), Lock (latch, Shift: snapshot), the strip modes on Pitch / Mod / Perform / Notes, Shift + Volume / Swing = velocity
+    curve, Shift + Mute = panic. The encoder is relative (two's complement), so FL never jumps; its push is CC 8, its touch sends nothing."""
+    c = bytearray(default_cfg(btn_mode=0, enc_mode=2))
+    def act(name, a, par=0xFF, shifted=False):
+        k = BUTTON_NAMES.index(name)
+        c[FIELDS['btn_act2' if shifted else 'btn_act'][0] + k] = a; c[FIELDS['btn_cc2' if shifted else 'btn_cc'][0] + k] = par
+    for name in ('Play', 'Stop'): act(name, ACT_CC, NI_BUTTON_CC[BUTTON_NAMES.index(name)])
+    act('Shift', ACT_SHIFT); act('Encoder Touch', ACT_NONE)          # (FL's Link to controller would learn the touch instead of the turn)
+    act('Pad Mode', ACT_PADMODE); act('Pad Mode', ACT_SCALE, 1, shifted=True)
+    act('Keyboard', ACT_KEYS); act('Keyboard', ACT_SCALE, 0, shifted=True)
+    act('Chords', ACT_CHORDS); act('Chords', ACT_CHORDTYPE, 0, shifted=True)
+    act('Fixed Vel', ACT_FIXVEL); act('Fixed Vel', ACT_VEL16, shifted=True)
+    act('Note Repeat', ACT_ARP); act('Note Repeat', ACT_RATE, 0, shifted=True)
+    act('Auto', ACT_ARPOCT); act('Auto', ACT_RATE, 1, shifted=True)
+    act('Lock', ACT_LATCH); act('Lock', ACT_SNAP, 0, shifted=True)
+    act('Pitch', ACT_STRIP, 1); act('Mod', ACT_STRIP, 2); act('Perform', ACT_STRIP, 0); act('Notes', ACT_STRIP, 3)
+    act('Volume', ACT_CURVE, 0, shifted=True); act('Swing', ACT_CURVE, 1, shifted=True)
+    act('Mute', ACT_PANIC, shifted=True)
+    for name, cc in FL_SHIFT_CC.items(): act(name, ACT_CC, cc, shifted=True)
+    return bytes(c)
+
 def builtin_presets():
     """The presets that come with the tool, as dicts with id, name, description and cfg (bytes). The browser page shows the same list
     (tools/ui/gen_data.py writes it into mmk3_data.js). Each has a `display_name`: what the device's screen shows when its slot is loaded."""
@@ -427,6 +467,12 @@ def builtin_presets():
                         "so pads 17-64 are pages 2-4), transport Play / Stop / Rec / Tap (CC 102-105), mode buttons Mute / Solo / Select / Scene / Keyboard (CC 107-111), bank steps on Group / Pattern. "
                         "Macros 1-16: press Volume / Swing / Tempo to choose which of three CCs the encoder turns (20-22), Plug-in / Sampling change the page (6 pages: CC 20-37); a fast turn takes bigger steps. Project (top left) loads the device's next preset slot, as in every preset.",
          'cfg': _beatmaker3()},
+        {'id': 'fl-studio', 'name': 'FL Studio',
+         'description': "For FL Studio on a computer with the Ex-Machina device script (integrations/fl_studio): the script turns the buttons into FL's transport, channel, pattern, step sequencer, "
+                        "mute / solo, mixer, plug-in and browser controls and shows them on the screen and the LEDs. Pad Mode / Keyboard / Chords, Fixed Vel, Note Repeat (arp), Auto, Lock and the strip modes "
+                        "stay on the device (Shift for their second function, as in Maschine-like modes); Shift + Volume / Swing = velocity curve, Shift + Mute = panic. Pads 1-16 = notes 36-51 (FPC's layout), "
+                        "encoder relative CC 7, strip CC 1. Without the script every button just sends NI's CC.",
+         'display_name': 'FL STUDIO', 'cfg': _fl_studio()},
         {'id': 'cubasis-3', 'name': 'Cubasis 3 (draft)',
          'description': "Draft, from Steinberg's help and forum posts, not tried. Pads 36-51 (GM kits). Buttons send CC 102-114 once per press (Play, Stop, Rec, Restart, Left, Right, Mute, Solo, Select, Follow, Tap, "
                         "Browser, Favorites): learn each one in Cubasis (Selected Track Mode on); do not declare the port Mackie/HUI. Encoder CC 20 (volume, Catch-Up), strip CC 21 (pan).",
@@ -578,6 +624,15 @@ def main(argv=None):
         elif rest[0] == 'store' and len(rest) > 1 and rest[1] in '1234': show(dev.slot_store(int(rest[1]) - 1, ' '.join(rest[2:]) or None))
         elif rest[0] == 'load' and len(rest) > 1 and rest[1] in '1234': show(dev.slot_load(int(rest[1]) - 1))
         else: raise SystemExit('slot list | slot store 1..4 [name] | slot load 1..4')
+    elif cmd == 'host':                                  # host mode: host [screen] [raw] [quiet] | host off (what a DAW script sets; RAM only)
+        f = 0
+        words = {'screen': HOST_SCREEN, 'raw': HOST_RAW, 'quiet': HOST_QUIET, 'off': 0}
+        for w in rest: f |= words[w.lower()] if w.lower() in words else int(w, 0)
+        show(dev.request(host_request(f), CMD_HOST))
+    elif cmd == 'text':                                  # text LINE WORDS... (line 1..4) | text clear: a line on the screen while host mode 'screen' is on
+        if rest and rest[0] == 'clear': dev.out.send(dev.mido.Message('sysex', data=text_request(None, '')[1:-1]))
+        elif rest and rest[0] in '1234': dev.out.send(dev.mido.Message('sysex', data=text_request(int(rest[0]) - 1, ' '.join(rest[1:]).ljust(TEXT_COLS))[1:-1]))
+        else: raise SystemExit('text 1..4 WORDS | text clear')
     elif cmd == 'save': show(dev.save())
     elif cmd == 'reset': show(dev.reset('--erase' in rest))
     else: raise SystemExit(f'unknown command {cmd!r}')
