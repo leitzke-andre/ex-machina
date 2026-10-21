@@ -34,8 +34,8 @@ check('the config block in the image is the host library\'s default_cfg()', fw[b
 
 # ---- INFO / GET ----
 d = Dev()
-check('INFO: protocol 2, 274-byte config, nothing saved, no changes', reply(d, mc.info_request()),
-      {'cmd': 0x10, 'protocol': 2, 'cfg_size': 274, 'saved': False, 'unsaved_changes': False, 'loaded_from_flash': False, 'version': 0})
+check('INFO: protocol 2, 274-byte config, nothing saved, no changes, Standalone mode', reply(d, mc.info_request()),
+      {'cmd': 0x10, 'protocol': 2, 'cfg_size': 274, 'saved': False, 'unsaved_changes': False, 'loaded_from_flash': False, 'version': 0, 'mode': 'standalone'})
 raw = d.ask(mc.get_request())
 check('GET: one SysEx reply F0 7D 4D 4B 51 <314 packed bytes> F7, all data bytes below 0x80', (len(raw), len(raw[0]), raw[0][:5].hex(), all(b < 0x80 for b in raw[0][1:-1])),
       (1, 320, 'f07d4d4b51', True))

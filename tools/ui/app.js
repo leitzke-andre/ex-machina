@@ -149,7 +149,7 @@ function buttonRow(id, layer) {
     if (!semi.hidden) { semi.value = p > 127 ? 0 : p - 64; semi.classList.remove('bad'); }
     modeSel.hidden = layer !== 0 || act !== 'cc' || id > 40;
     if (!modeSel.hidden) { const o = (state.cfg[MO] >> MS) & 3; modeSel.value = String(o - 1); }
-    if (id === M.BTN_PROJECT) hintText.textContent = 'always: the next preset slot (fixed)';
+    if (id === M.BTN_PROJECT) hintText.textContent = 'always: the next preset slot; Shift + Project: Standalone / FL Studio mode (fixed)';
     else hintText.textContent = act === 'note' && p <= 127 ? M.noteName(p) : act === 'cc' ? (p <= 127 ? `CC ${p}` : '') : act === 'mmc' ? 'F0 7F 7F 06 …' : act === 'none' ? '' : act === 'curve' ? 'message on the screen' : act === 'transpose' ? 'semitones; applies to the pads' : HINTS[act] ?? 'on press';
     $('blist').querySelectorAll(`[data-btn="${id}${layer ? 's' : ''}"]`).forEach((n) => n.classList.toggle('changed', !!state.deviceCfg && (state.cfg[A] !== state.deviceCfg[A] || state.cfg[C] !== state.deviceCfg[C] || (!layer && ((state.cfg[MO] >> MS) & 3) !== ((state.deviceCfg[MO] >> MS) & 3)))));
   };
@@ -328,8 +328,9 @@ function updateChrome() {
   $('btn-read').disabled = !connected; $('btn-send').disabled = !connected || bad || !!same;
   $('btn-save').disabled = !connected || bad || (!!same && !state.info?.unsaved_changes);
   $('btn-defaults').disabled = !connected; $('btn-erase').disabled = !connected;
+  $('btn-mode').disabled = !connected || !state.info?.mode; $('btn-mode').textContent = state.info?.mode === 'fl' ? 'Switch to Standalone mode' : 'Switch to FL Studio mode';
   const kv = $('devinfo'); kv.replaceChildren();
-  const rows = connected && state.info ? [['Device', state.name], ...(state.info.version != null ? [['Firmware', `${D.FW_NAME} v${state.info.version}`]] : []), ['Protocol', String(state.info.protocol)], ['Saved settings', state.info.saved ? 'yes' : 'no'], ['Unsaved changes', state.info.unsaved_changes ? 'yes' : 'no'], ['Loaded from saved at power-up', state.info.loaded_from_flash ? 'yes' : 'no']] : [['Device', 'not connected']];
+  const rows = connected && state.info ? [['Device', state.name], ...(state.info.version != null ? [['Firmware', `${D.FW_NAME} v${state.info.version}`]] : []), ['Protocol', String(state.info.protocol)], ['Saved settings', state.info.saved ? 'yes' : 'no'], ['Unsaved changes', state.info.unsaved_changes ? 'yes' : 'no'], ['Loaded from saved at power-up', state.info.loaded_from_flash ? 'yes' : 'no'], ...(state.info.mode ? [['Mode', state.info.mode === 'fl' ? 'FL Studio (Shift + Project)' : 'Standalone']] : [])] : [['Device', 'not connected']];
   for (const [k, v] of rows) kv.append(el('dt', { text: k }), el('dd', { text: v }));
   renderSlots();
 }
@@ -694,6 +695,10 @@ function init() {
   $('btn-save').addEventListener('click', guarded(saveOnDevice));
   $('btn-defaults').addEventListener('click', guarded(() => resetDevice(false)));
   $('btn-erase').addEventListener('click', guarded(() => resetDevice(true)));
+  $('btn-mode').addEventListener('click', guarded(async () => {             // the device's mode (Shift + Project does the same on the device)
+    const r = await state.client.mode(state.info?.mode === 'fl' ? 'standalone' : 'fl');
+    say(`The device is in ${r.mode === 'fl' ? 'FL Studio' : 'Standalone'} mode now.`); await readFromDevice();
+  }));
   $('live').addEventListener('change', (e) => { state.live = e.target.checked; });
   $('preset-select').addEventListener('change', (e) => e.target.value && usePreset(e.target.value));
   $('btn-psave').addEventListener('click', () => savePresetAs());

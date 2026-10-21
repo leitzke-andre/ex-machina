@@ -133,6 +133,7 @@ struct cfg {                /* lives in flash at CFG_ADDR, editable offline */
     u8 enc_accel;           /* 0 = off, 1..3: turning faster takes bigger steps */
 } __attribute__((packed));
 _Static_assert(sizeof(struct cfg) == 274, "cfg layout is mirrored in mmk3_config.py");
+#define CFG_FL ((const struct cfg *)0x0800EC80)         /* the FL Studio mode's mapping, built in (build_patch.py CFG_FL_ADDR, mmk3_config.fl_cfg()) */
 #define CFG_DEFAULTS ((const struct cfg *)0x0800CE00)   /* the build-time defaults, in flash; the ACTIVE config is a RAM copy, see struct state */
 #define OFS(f) ((u32)__builtin_offsetof(struct cfg, f))
 
@@ -143,6 +144,9 @@ _Static_assert(sizeof(struct cfg) == 274, "cfg layout is mirrored in mmk3_config
 #define FONT_ADDR 0x0800D940u                            /* 5 x 7 font, ASCII 32..95, 5 column bytes each (bit 0 = top row) */
 #define TXT_ADDR 0x0800DA80u                             /* the texts of the display messages: 16 bytes each, NUL padded (build_patch.py TEXTS) */
 #define SCALE_N 24u
+#define BTN_PROJECT 0                              /* the top-left button: fixed (cfg_fixed) */
+#define BTN_SHIFT 25                               /* Shift, for the mode switch whatever it is mapped to */
+#define FL_SHIFT_REPORT_CC 111                     /* FL Studio mode: Shift down / up as this CC (mmk3_config.FL_SHIFT_REPORT_CC) */
 #define CHORD_N 8u                                  /* chord types: 0..4 built from the scale, CHORD_FIXED.. fixed shapes */
 #define CHORD_FIXED 5u
 #define CHORD_MAX 6u                                /* the most notes a chord pad plays (maj 11) */
@@ -282,6 +286,11 @@ struct state {              /* RAM above the firmware's stack, zeroed by mmk3_in
     u8 hgen;                /* bumped by every TEXT: the host's picture is drawn again */
     u16 rawheld;            /* pads (report index) whose Note On went out as a grid note; their Note Off follows whatever the flags say by then */
     char htext[4][21];      /* the host's four text lines, 21 characters each (0 = blank) */
+    /* The two modes (Shift + Project, SysEx 22 MODE; remembered in the settings log): Standalone (the mappings, slots and functions as they are) and
+     * FL Studio (the built-in mapping CFG_FL for the FL Studio device script; the standalone mapping waits in FL_STASH). */
+    u8 fl;                  /* 1: FL Studio mode */
+    u8 mode_req;            /* Shift + Project asked for a switch (1 Standalone, 2 FL Studio), done by the main loop */
+    u8 proj_gest;           /* Project went down with Shift: its release does nothing either */
 };
 #define HOST_SCREEN 1u      /* the picture behind the messages is the host's text, not the idle screen / sequencer grid */
 #define HOST_RAW 2u         /* every pad sends note 36 + its number - 1 (pad 1 = 36 ... pad 16 = 51) whatever the pad mode, arp, mute / solo or sequencer */
@@ -428,7 +437,7 @@ enum { T_PADMODE, T_KEYBOARD, T_FIXVEL, T_VEL16, T_VELOCITY, T_TRANSPOSE, T_PANI
        T_SCALE12, T_SCALE13, T_SCALE14, T_SCALE15, T_SCALE16, T_SCALE17, T_SCALE18, T_SCALE19, T_SCALE20, T_SCALE21, T_SCALE22, T_SCALE23,
        T_PAGE, T_ENCPAGE, T_DFU, T_FLASHTOLEAVE, T_STEP, T_TRK, T_PAT, T_RUN, T_STOP, T_TRACK, T_PATTERN, T_CLEAR, T_PATTERNS, T_CHANNEL, T_SLOT, T_LOADED, T_SAVED, T_EMPTY, T_ERROR, T_EXNAME, T_VER, T_M0, T_M1, T_M2, T_CH, T_CLK, T_SEQ,
        T_ARP, T_ARPTYPE, T_RATE, T_OCT, T_LATCH, T_TEMPO, T_BPM, T_CLOCK, T_MUTE, T_SOLO, T_CLEARED, T_LOCK, T_STORED, T_RECALLED, T_EXT, T_STRUM,
-       T_AT0, T_AT1, T_AT2, T_AT3, T_AT4, T_AT5, T_RATE0, T_RATE1, T_RATE2, T_RATE3, T_RATE4, T_RATE5, T_RATE6, T_COUNT };
+       T_AT0, T_AT1, T_AT2, T_AT3, T_AT4, T_AT5, T_RATE0, T_RATE1, T_RATE2, T_RATE3, T_RATE4, T_RATE5, T_RATE6, T_MODE, T_FLSTUDIO, T_STANDALONE, T_WAITFL, T_COUNT };
 
 #define MS16 (*(volatile u16 *)0x200010E8)               /* the stock SysTick handler's free-running millisecond counter (struct + 0xc0) */
 #define DISP_HDR ((volatile u8 *)0x200013A1)              /* struct + 0x379: x,0,page,0,w,0,h,0 (u16 each) */
@@ -509,7 +518,7 @@ static u32 col_msg(const struct state *s, u32 x)          /* a message: title, d
 }
 static u32 col_idle(const struct state *s, u32 x)         /* the idle screen: the firmware's name and version, then a status line */
 {
-    return title_col(txt(T_EXNAME), x) << 1 | (s->vd[0] ? text_col(s->vd, 21, x, 4) : text_col(txt(T_VER), 15, x, 4)) << 17 | text_col(s->vs, 21, x, 4) << 25;
+    return title_col(txt(s->fl ? T_FLSTUDIO : T_EXNAME), x) << 1 | (s->vd[0] ? text_col(s->vd, 21, x, 4) : text_col(txt(s->fl ? T_WAITFL : T_VER), 15, x, 4)) << 17 | text_col(s->vs, 21, x, 4) << 25;
 }
 
 /* One half of the picture straight into the stock staging buffer. Bytes are inverted at the end: a lit pixel is a cleared bit. */
@@ -1151,7 +1160,11 @@ static u8 *button_event(struct state *s, const struct cfg *c, u8 *q, u8 act, u8 
     u8 ch = c->channel & 15;
     if (act == ACT_NOTE) return now ? note_on(s, q, ch, par, 127) : note_off(s, q, ch, par);
     if (act == ACT_SEQSEL) { if (now) { if (s->seq_sel < 255) s->seq_sel++; } else if (s->seq_sel) s->seq_sel--; return q; }
-    if (act == ACT_SHIFT) { if (now) { if (s->shift < 255) s->shift++; } else if (s->shift) s->shift--; return q; }
+    if (act == ACT_SHIFT) {
+        if (now) { if (s->shift < 255) s->shift++; } else if (s->shift) s->shift--;
+        if (s->fl) q = emit(q, 0xB0 | ch, FL_SHIFT_REPORT_CC, now ? 127 : 0);   /* FL Studio mode: the script sees Shift too (help screen, Shift + pads) */
+        return q;
+    }
     if (!now) return q;                              /* everything else acts on press only */
     if (act == ACT_CLOCKOUT) {
         s->clock_out = !s->clock_out;
@@ -1219,6 +1232,11 @@ static u32 translate_report(const u8 *buf, u32 len)
                 ROOM(48);
                 now = k < 40 ? (r[k >> 3] >> (k & 7)) & 1 : touch;
                 old = k < 40 ? (s->btn[k >> 3] >> (k & 7)) & 1 : s->touch;
+                if (k == BTN_PROJECT && now != old && (s->proj_gest || (now && ((r[BTN_SHIFT >> 3] >> (BTN_SHIFT & 7)) & 1)))) {
+                    if (now) { s->proj_gest = 1; s->mode_req = (u8)(s->fl ? 1 : 2); }      /* Shift + Project: the other mode (main loop) */
+                    else s->proj_gest = 0;                                                     /* (its release does nothing either) */
+                    continue;
+                }
                 if (now != old) {
                     u8 bit = (u8)(1u << (k & 7)), lay, act, par;
                     if (now) {                       /* a press picks its layer, the release uses the same one */
@@ -1433,7 +1451,7 @@ static u32 translate_report(const u8 *buf, u32 len)
 #define HEALTHY_MS 10000u
 #define ADC_RAW ((const volatile u16 *)0x20000718)
 #define CAP_BASE 0x20001C20u                         /* header: magic, frames, frame size, mask; frames from CAP_BASE + 16 */
-#define CAP_END 0x200041F0u
+#define CAP_END 0x20004000u                          /* (above it: the standalone mapping kept while in FL Studio mode, FL_STASH) */
 #define CAP ((volatile u32 *)CAP_BASE)
 #define CAP_MAGIC 0x50414352u
 #define BOOT_FLAG (*(volatile u32 *)0x20004FECu)  /* one-shot: the next boot uses our board init (hal.c own_board_init) */
@@ -1647,13 +1665,13 @@ static void mode_reset(struct state *s, const struct cfg *c)
 
 /* A record in a flash page (the saved config or a preset slot): rec_ok = it is intact; rec_load = it is, and `out` now holds its config laid over the
  * defaults and range-checked. */
-/* Project (button 0, top left) always loads the next preset slot, with and without Shift: whatever a config says, it is set here on every config
- * that enters RAM (the defaults, the saved one, a slot, one from the host), so the way through the slots can never be mapped away. */
-#define BTN_PROJECT 0
-static void cfg_fixed(struct cfg *c)
+/* Project (button 0, top left) is fixed: in Standalone mode it loads the next preset slot, in FL Studio mode it is a plain CC (38) for the script.
+ * Whatever a config says, it is set here on every config that enters RAM (the defaults, the saved one, a slot, one from the host), so the way through
+ * the slots can never be mapped away. Shift + Project switches the mode in every mapping (translate_report, whatever Shift itself does). */
+static void cfg_fixed(struct cfg *c, u32 fl)
 {
-    c->btn_act[BTN_PROJECT] = ACT_SLOT; c->btn_cc[BTN_PROJECT] = 8;
-    c->btn_act2[BTN_PROJECT] = ACT_NONE; c->btn_cc2[BTN_PROJECT] = 0xFF;   /* with Shift: the same */
+    c->btn_act[BTN_PROJECT] = fl ? ACT_CC : ACT_SLOT; c->btn_cc[BTN_PROJECT] = fl ? 38 : 8;
+    c->btn_act2[BTN_PROJECT] = ACT_NONE; c->btn_cc2[BTN_PROJECT] = 0xFF;   /* with Shift: the mode switch */
 }
 
 static u32 rec_ok(u32 page)
@@ -1668,20 +1686,27 @@ static u32 rec_load(u32 page, struct cfg *out)
     copy8(out, CFG_DEFAULTS, sizeof *out);
     copy8(out, r->data, r->len);                    /* a shorter record (older layout) only overlays the fields it has */
     if (cfg_check(out)) return 0;
-    cfg_fixed(out);
+    cfg_fixed(out, 0);                               /* (records are standalone mappings) */
     return 1;
 }
 
+static u32 log_mode(void);
+static void stash_put(struct state *s, const struct cfg *c);
 static void cfg_load(struct state *s)
 {
     struct cfg *c = &s->cfgbuf[0];
     copy8(c, CFG_DEFAULTS, sizeof *c);
-    cfg_fixed(c);
+    cfg_fixed(c, 0);
     u32 k;
     s->cfgp = c; s->cfgi = 0;
     for (k = 0; k < 24; k++) s->slname[k] = 0xFF;
     if (rec_load(SAVE_PAGE, &s->cfgbuf[1])) { copy8(c, &s->cfgbuf[1], sizeof *c); s->saved = 1; s->flags_boot = 1; }
     log_apply(c);
+    if (log_mode()) {                                /* FL Studio mode was on at power-off: the standalone mapping waits, the built-in one is active */
+        stash_put(s, c);
+        { u8 curve = c->vel_curve; copy8(c, CFG_FL, sizeof *c); c->vel_curve = curve; }
+        cfg_fixed(c, 1); s->fl = 1;
+    }
 }
 
 /* ST's flash primitives (the standard peripheral library routines of the stock firmware). */
@@ -1768,6 +1793,7 @@ static void enter_dfu(void)
 #define LOG_WORDS 128u
 #define LOG_KIND_CURVE 1u
 #define LOG_KIND_CHANNEL 2u
+#define LOG_KIND_MODE 3u                            /* 0 Standalone, 1 FL Studio */
 static u32 log_word(u32 kind, u32 value) { return 0x5Au | (kind << 8) | (value << 16) | ((0x5Au ^ kind ^ value ^ 0xFFu) << 24); }
 static u32 log_valid(u32 w) { return (w & 0xFF) == 0x5A && (w >> 24) == ((0x5Au ^ ((w >> 8) & 0xFF) ^ ((w >> 16) & 0xFF) ^ 0xFFu) & 0xFF); }
 
@@ -1785,6 +1811,13 @@ static u32 log_has(u32 kind)                        /* the log holds a choice of
     u32 k;
     for (k = 0; k < LOG_WORDS; k++) if (log_valid(p[k]) && ((p[k] >> 8) & 0xFF) == kind) return 1;
     return 0;
+}
+static u32 log_mode(void)                           /* boot: the last mode in the log (0 Standalone) */
+{
+    const u32 *p = (const u32 *)LOG_BASE;
+    u32 k, m = 0;
+    for (k = 0; k < LOG_WORDS; k++) if (log_valid(p[k]) && ((p[k] >> 8) & 0xFF) == LOG_KIND_MODE) m = ((p[k] >> 16) & 0xFF) == 1;
+    return m;
 }
 static void log_apply(struct cfg *c)                /* boot: the last curve in the log */
 {
@@ -1832,6 +1865,33 @@ static void slname_load(struct state *s, u32 page)       /* the slot's name into
 
 /* Appends a word to the settings log. A full log is cleared by a full save of the active config (which erases the page), or, when nothing
  * is saved, by an erase. */
+static void log_put(u32 kind, u32 value)            /* one word at the end of the log (nothing if it is full) */
+{
+    const u32 *p = (const u32 *)LOG_BASE;
+    u32 k;
+    for (k = 0; k < LOG_WORDS && p[k] != 0xFFFFFFFFu; k++) { }
+    if (k == LOG_WORDS) return;
+    FLASH_UNLOCK(); FLASH_CLEAR(0x35);
+    FLASH_PROG(LOG_BASE + 4 * k, log_word(kind, value));
+    FLASH_LOCK();
+}
+#define FL_STASH ((struct fl_stash *)0x20004000u)  /* RAM nothing else uses (the raw pad capture ends below it): the standalone mapping during FL Studio mode */
+struct fl_stash { struct cfg c; u8 slname[24]; u8 slot_cur, dirty, valid, pad; };
+#define STASH_VALID 0xA5u
+_Static_assert(0x20004000u + sizeof(struct fl_stash) <= 0x20004200u, "the stash must end below the state");
+static const struct cfg *standalone(const struct state *s) { return s->fl ? &FL_STASH->c : s->cfgp; }   /* the mapping SAVE / SLOT STORE keep */
+static void stash_put(struct state *s, const struct cfg *c)    /* the standalone mapping, its slot and name, kept while FL Studio mode runs */
+{
+    copy8(&FL_STASH->c, c, sizeof *c);
+    copy8(FL_STASH->slname, s->slname, 24);
+    FL_STASH->slot_cur = s->slot_cur; FL_STASH->dirty = s->dirty; FL_STASH->valid = STASH_VALID;
+}
+/* The page was erased (a SAVE, a full log): what only the log held goes back in. With a saved record the curve and channel are in it. */
+static void log_restore(struct state *s)
+{
+    if (!s->saved) { log_put(LOG_KIND_CURVE, s->cfgp->vel_curve); log_put(LOG_KIND_CHANNEL, standalone(s)->channel & 15); }
+    if (s->fl) log_put(LOG_KIND_MODE, 1);
+}
 static void log_append(struct state *s, u32 kind, u32 value)
 {
     const u32 *p = (const u32 *)LOG_BASE;
@@ -1844,15 +1904,12 @@ static void log_append(struct state *s, u32 kind, u32 value)
             log_apply(t);
             if (kind == LOG_KIND_CURVE && value <= 8) t->vel_curve = (u8)value;
             if (kind == LOG_KIND_CHANNEL && value <= 15) t->channel = (u8)value;
-            save_write(s, t);
-            return;
-        }
-        if (!save_erase()) return;
-        k = 0;
+            if (!save_write(s, t)) return;
+        } else if (!save_erase()) return;
+        log_restore(s);
+        if (kind != LOG_KIND_MODE) return;           /* (curve and channel are back in; a mode word follows) */
     }
-    FLASH_UNLOCK(); FLASH_CLEAR(0x35);
-    FLASH_PROG(LOG_BASE + 4 * k, log_word(kind, value));
-    FLASH_LOCK();
+    log_put(kind, value);
 }
 
 /* The four step patterns (256 bytes) in their own flash page: magic, version, length, CRC, then the data; the magic is programmed last. */
@@ -1931,7 +1988,7 @@ static void cfg_commit(struct state *s, const struct cfg *n)
 {
     u8 i = s->cfgi ^ 1;                             /* fill the buffer that is not in use, then switch */
     copy8(&s->cfgbuf[i], n, sizeof *n);
-    cfg_fixed(&s->cfgbuf[i]);
+    cfg_fixed(&s->cfgbuf[i], s->fl);
     u32 k;
     s->cfgi = i;
     s->dirty = 1;
@@ -2061,7 +2118,8 @@ static void req_start(struct state *s, const u8 *b, u32 n)
     if (b[0] == 0x1D) { copy8(s->stage, b + 1, n > 5 ? 4 : n - 1); if (n != 5) s->req_err = 1; }
     if (b[0] == 0x1F && !(n == 5 && b[1] == 'H' && b[2] == 'A' && b[3] == 'N' && b[4] == 'G')) s->req_err = 1;
     if (b[0] == 0x12 && unpack7(s->stage, sizeof s->stage, b + 1, n - 1) != sizeof(struct cfg)) s->req_err = 1;
-    if ((b[0] == 0x15 && (n < 2 || n > 2 + NAME_MAX)) || (b[0] == 0x16 && n != 2) || (b[0] == 0x20 && n != 2)) s->req_err = 1;       /* the slot number is required, a store may add a name (up to 20 characters) */
+    if ((b[0] == 0x15 && (n < 2 || n > 2 + NAME_MAX)) || (b[0] == 0x16 && n != 2) || (b[0] == 0x20 && n != 2)) s->req_err = 1;
+    if (b[0] == 0x22) { if (n == 1) s->req_arg = 0xFF; else if (n != 2 || b[1] > 1) s->req_err = 1; }    /* MODE: a query, or 0 / 1 */       /* the slot number is required, a store may add a name (up to 20 characters) */
     if (b[0] == 0x15 && !s->req_err) {
         u32 k;
         for (k = 0; k < 24; k++) {
@@ -2084,16 +2142,50 @@ static void host_set(struct state *s, u32 f)
     s->vdirty = 1;
 }
 
+/* The mode switch (main loop). Into FL Studio mode: the standalone mapping (with its slot, name and unsaved state) goes to FL_STASH and the built-in
+ * mapping takes over, keeping the velocity curve. Back: host mode ends (the script's screen and pad grid), the standalone mapping returns as it was.
+ * Either way everything that sounds is released first (cfg_commit), the choice is logged and the screen says so. */
+static void mode_set(struct state *s, u32 fl)
+{
+    if (fl == s->fl) return;
+    if (fl) {
+        u8 curve = s->cfgp->vel_curve, dirty;
+        stash_put(s, s->cfgp); dirty = s->dirty;
+        s->fl = 1; cfg_commit(s, CFG_FL);
+        ((struct cfg *)s->cfgp)->vel_curve = curve;   /* (one curve for both modes, as the log keeps it) */
+        s->dirty = dirty;
+    } else {
+        host_set(s, 0);
+        s->fl = 0;
+        if (FL_STASH->valid == STASH_VALID) {
+            cfg_commit(s, &FL_STASH->c);
+            copy8(s->slname, FL_STASH->slname, 24); s->slot_cur = FL_STASH->slot_cur; s->dirty = FL_STASH->dirty;
+        } else cfg_commit(s, CFG_DEFAULTS);         /* (cannot happen: entering FL Studio mode always fills the stash) */
+        FL_STASH->valid = 0;
+    }
+    log_append(s, LOG_KIND_MODE, fl);
+    m_begin(s, T_MODE); tx(s->md, 0, fl ? T_FLSTUDIO : T_STANDALONE, 21); m_show(s);
+    s->vdirty = 1;
+}
+static void rep_mode(struct state *s, u8 status)    /* 62 <status> <mode>: the answer to MODE, and the announcement of every switch */
+{
+    u32 o = s->reply_len;                            /* (appended: it may follow another reply in the same buffer) */
+    s->reply[o] = 0xF0; s->reply[o + 1] = 0x7D; s->reply[o + 2] = 0x4D; s->reply[o + 3] = 0x4B; s->reply[o + 4] = 0x62;
+    s->reply[o + 5] = status & 0x7F; s->reply[o + 6] = s->fl; s->reply[o + 7] = 0xF7;
+    s->reply_len = (u16)(o + 8);
+}
+
 static void request(struct state *s)                 /* main loop: one pending request, its reply goes to reply[] */
 {
-    u8 cmd = s->req, status = 0;
+    u8 cmd = s->req, status = 0, left = 0;
     s->u_ok = 1;                                     /* (usb.c: a host talks to us) */
     u32 bad = 0;
+    if (s->fl && !s->req_err && (cmd == 0x12 || cmd == 0x14 || cmd == 0x16)) { mode_set(s, 0); left = 1; }   /* a mapping from a host: back to Standalone */
     if (cmd == 0x15 || cmd == 0x16) {                /* store the active config in slot / make a slot the active config: status 2 bad slot, 3 flash error, 4 empty slot */
         u32 n = s->req_arg;
         if (s->req_err) status = 1;
         else if (n > 3) status = 2;
-        else if (cmd == 0x15) { copy8(s->slname, s->stage, 24); if (rec_write(s, SLOT_PAGE(n), s->cfgp, 1)) s->slot_cur = (u8)(n + 1); else status = 3; }
+        else if (cmd == 0x15) { copy8(s->slname, s->stage, 24); if (rec_write(s, SLOT_PAGE(n), standalone(s), 1)) s->slot_cur = (u8)(n + 1); else status = 3; }
         else { struct cfg *t = &s->cfgbuf[s->cfgi ^ 1]; if (rec_load(SLOT_PAGE(n), t)) { cfg_commit(s, t); slname_load(s, SLOT_PAGE(n)); s->slot_cur = (u8)(n + 1); } else status = 4; }
         rep_start(s, 0x40 + cmd); rep_byte(s, status); rep_end(s);
     } else if (cmd == 0x17) {                        /* which slots hold a config: a bit mask */
@@ -2106,11 +2198,16 @@ static void request(struct state *s)                 /* main loop: one pending r
             for (k = 0; k < NAME_MAX; k++) { if (nm[k] < 32 || nm[k] > 95) ok = 0; rep_byte(s, ok ? nm[k] : 0); }
         }
         rep_end(s);
+    } else if (cmd == 0x22) {                        /* MODE [0 Standalone | 1 FL Studio] -> 62 <status> <mode> */
+        if (s->req_err) status = 1;
+        else if (s->req_arg != 0xFF) mode_set(s, s->req_arg);
+        s->reply_len = 0; rep_mode(s, status);
     } else if (cmd == 0x10) {
         rep_start(s, 0x50);
         rep_byte(s, PROTO_VERSION); rep_byte(s, sizeof(struct cfg) & 0x7F); rep_byte(s, sizeof(struct cfg) >> 7);
         rep_byte(s, (s->saved ? 1 : 0) | (s->dirty ? 2 : 0) | (s->flags_boot ? 4 : 0));
         rep_byte(s, FW_VERSION);
+        rep_byte(s, s->fl);                          /* the mode (0 Standalone, 1 FL Studio) */
         rep_end(s);
     } else if (cmd == 0x11) {
         rep_start(s, 0x51);
@@ -2124,11 +2221,14 @@ static void request(struct state *s)                 /* main loop: one pending r
         if (status == 2) { rep_byte(s, (bad - 1) & 0x7F); rep_byte(s, (bad - 1) >> 7); }
         rep_end(s);
     } else if (cmd == 0x13) {
-        if (same8(s->cfgp, CFG_DEFAULTS, sizeof(struct cfg))) {          /* the defaults need no record: back to a blank page */
+        const struct cfg *sa = standalone(s);       /* (in FL Studio mode: the standalone mapping that waits, not the built-in FL one) */
+        if (same8(sa, CFG_DEFAULTS, sizeof(struct cfg))) {               /* the defaults need no record: back to a blank page */
             if (!save_erase()) status = 3;
             else { s->saved = 0; s->dirty = 0; }
-        } else if (!save_write(s, s->cfgp)) status = 3;
+        } else if (!save_write(s, sa)) status = 3;
         else { s->saved = 1; s->dirty = 0; }
+        if (status != 3 && s->fl) log_put(LOG_KIND_MODE, 1);           /* (the erase took the log with it: FL Studio mode stays remembered) */
+        if (s->fl) FL_STASH->dirty = s->dirty;
         rep_start(s, 0x53); rep_byte(s, status); rep_end(s);
     } else if (cmd == 0x1D) {                        /* raw pad capture: mask (3 x 7 bits, LSB first), period in ms (1..127); a zero mask stops it */
         u32 mask = s->stage[0] | (u32)s->stage[1] << 7 | (u32)(s->stage[2] & 3) << 14, per = s->stage[3];
@@ -2180,6 +2280,7 @@ static void request(struct state *s)                 /* main loop: one pending r
         rep_start(s, 0x54); rep_byte(s, status); rep_end(s);
     }
     if ((cmd == 0x12 || cmd == 0x14 || cmd == 0x16) && !status && s->host) host_set(s, 0);   /* another config from the host: host mode ends */
+    if (left) rep_mode(s, 0);                        /* (the script learns that FL Studio mode ended: after the command's own reply) */
     __asm volatile("" ::: "memory");                /* (every use of stage[] / req_arg above is done before the store below) */
     s->req = 0;                                      /* only now may the interrupt take the next one (it would overwrite stage[] before) */
 }
@@ -2389,6 +2490,7 @@ static void tick_body(void)
     if (s->req && !s->reply_len) request(s);
     if (s->seq_save && !s->reply_len) { u32 ok = pat_write(s); s->seq_save = 0; if (ok) s->seq_dirty = 0; announce_text(s, T_PATTERNS, ok ? T_SAVED : T_ERROR); }
     if (s->slot_req && !s->req && !s->reply_len) { u8 r = s->slot_req; s->slot_req = 0; slot_do(s, r); }
+    if (s->mode_req && !s->req && !s->reply_len) { u8 m = (u8)(s->mode_req - 1); s->mode_req = 0; mode_set(s, m); s->reply_len = 0; rep_mode(s, 0); }   /* Shift + Project */
     if (s->reply_len) reply_pump(s);
     else if ((s->reboot || s->cap_hang) && RING_R == RING_W && !EP1_TX_BUSY()) {     /* the reply has left the device: */
         if (s->reboot && ++s->reboot > 50) { __asm volatile("dsb"); AIRCR = 0x05FA0004u; for (;;) { } }        /* reboot (SysEx 1C flag 4) */
@@ -2451,7 +2553,7 @@ static void sysex_done(void)
         u32 line = b[4], col = n > 5 ? b[5] : 0, l;
         if (line == 0x7F) { for (l = 0; l < 4; l++) for (i = 0; i < 21; i++) s->htext[l][i] = 0; s->hgen++; }
         else if (line < 4 && col < 21) { for (i = 6; i < n && col < 21; i++) s->htext[line][col++] = (char)b[i]; s->hgen++; }
-    } else if ((b[3] >= 0x10 && b[3] <= 0x17) || (b[3] >= 0x1C && b[3] <= 0x1F) || b[3] == 0x20) {
+    } else if ((b[3] >= 0x10 && b[3] <= 0x17) || (b[3] >= 0x1C && b[3] <= 0x1F) || b[3] == 0x20 || b[3] == 0x22) {
         req_start(s, b + 3, n - 3);
     }
 }

@@ -36,6 +36,19 @@ def led_msg(led, value):
 
 def host(flags): return MFR + bytes([t.CMD_HOST, flags & 0x7F, 0xF7])
 
+def mode_query(): return MFR + bytes([t.CMD_MODE, 0xF7])
+
+NOTE_NAMES = ('C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B')
+def note_name(n):
+    """A MIDI note as FL names it (middle C = 60 = C5)."""
+    return '%s%d' % (NOTE_NAMES[int(n) % 12], int(n) // 12)
+
+def mode_msg(sx):
+    """The device's mode (0 Standalone, 1 FL Studio) if `sx` is its answer to MODE or the announcement of a switch (62 00 <mode>), else None."""
+    sx = bytes(sx)
+    if len(sx) >= 8 and sx[:4] == MFR and sx[4] == t.CMD_MODE + 0x40 and sx[5] == 0: return sx[6]
+    return None
+
 def is_host_reply(sx):
     """(ok, flags) if `sx` is the device's answer to HOST, else None."""
     sx = bytes(sx)

@@ -41,7 +41,7 @@ check('parse_record(build_record(c)) == c, and a flipped bit anywhere in the dat
 check('parse_record refuses a blank page', mc.parse_record(b'\xff' * 288), None)
 check('parse_reply: INFO, SET refused with offset, SAVE ok',
       (mc.parse_reply(bytes([0xF0, 0x7D, 0x4D, 0x4B, 0x50, 2, 122, 1, 5, 0xF7])), mc.parse_reply(bytes([0x7D, 0x4D, 0x4B, 0x52, 2, 100, 1])), mc.parse_reply(bytes([0x7D, 0x4D, 0x4B, 0x53, 3]))),
-      ({'cmd': 16, 'protocol': 2, 'cfg_size': 250, 'saved': True, 'unsaved_changes': False, 'loaded_from_flash': True, 'version': None},
+      ({'cmd': 16, 'protocol': 2, 'cfg_size': 250, 'saved': True, 'unsaved_changes': False, 'loaded_from_flash': True, 'version': None, 'mode': None},
        {'cmd': 18, 'status': 2, 'status_text': 'value out of range', 'offset': 228}, {'cmd': 19, 'status': 3, 'status_text': 'flash error'}))
 try: mc.parse_reply(bytes([0xF0, 0x41, 1, 2, 0xF7])); raised = False
 except mc.ProtocolError: raised = True

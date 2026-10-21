@@ -88,12 +88,14 @@ export function unpack7(data) {
 }
 
 export const MANUFACTURER = [0x7d, 0x4d, 0x4b];
-export const CMD = { INFO: 0x10, GET: 0x11, SET: 0x12, SAVE: 0x13, RESET: 0x14, SLOT_STORE: 0x15, SLOT_LOAD: 0x16, SLOTS: 0x17, PEEK: 0x1e };
+export const CMD = { INFO: 0x10, GET: 0x11, SET: 0x12, SAVE: 0x13, RESET: 0x14, SLOT_STORE: 0x15, SLOT_LOAD: 0x16, SLOTS: 0x17, PEEK: 0x1e, MODE: 0x22 };
+export const MODE_NAMES = ['standalone', 'fl'];   // the device's two modes (Shift + Project on the device)
 export const REPLY = 0x40;
 export const STATUS = { 0: 'ok', 1: 'wrong length', 2: 'value out of range', 3: 'flash error', 4: 'empty slot' };
 
 export const message = (cmd, payload = []) => Uint8Array.from([0xf0, ...MANUFACTURER, cmd, ...payload, 0xf7]);
 export const infoRequest = () => message(CMD.INFO);
+export const modeRequest = (mode = null) => (mode === null ? message(CMD.MODE) : message(CMD.MODE, [typeof mode === 'string' ? MODE_NAMES.indexOf(mode) : mode]));
 export const getRequest = () => message(CMD.GET);
 /** Project (top left) always loads the next preset slot, with and without Shift: the firmware sets it on every config it takes (cfg_fixed() in
  *  translate.c), so every config made here carries it too (mmk3_config.fix_project). Returns a copy. */
@@ -128,9 +130,10 @@ export function parseReply(msg) {
   if (m.length < 4 || m[0] !== 0x7d || m[1] !== 0x4d || m[2] !== 0x4b || m[3] < REPLY) throw new ProtocolError(`not a reply of this device: ${hex(Uint8Array.from(m))}`);
   const cmd = m[3] - REPLY, data = m.slice(4);
   if (cmd === CMD.INFO) {
-    return { cmd, protocol: data[0], cfg_size: data[1] | (data[2] << 7), saved: !!(data[3] & 1), unsaved_changes: !!(data[3] & 2), loaded_from_flash: !!(data[3] & 4), version: data[4] ?? null };
+    return { cmd, protocol: data[0], cfg_size: data[1] | (data[2] << 7), saved: !!(data[3] & 1), unsaved_changes: !!(data[3] & 2), loaded_from_flash: !!(data[3] & 4), version: data[4] ?? null, mode: data.length > 5 ? (MODE_NAMES[data[5]] ?? null) : null };
   }
   if (cmd === CMD.GET) return { cmd, cfg: unpack7(Uint8Array.from(data)) };
+  if (cmd === CMD.MODE) return { cmd, status: data[0], status_text: STATUS[data[0]] ?? '?', mode: data.length > 1 ? (MODE_NAMES[data[1]] ?? null) : null };
   if (cmd === CMD.PEEK) {
     let addr = 0;
     for (const b of data.slice(1, 6)) addr = addr * 128 + b;
@@ -204,6 +207,7 @@ export class Mk3 {
   }
 
   info() { return this.request(infoRequest(), CMD.INFO); }
+  mode(m = null) { return this.request(modeRequest(m), CMD.MODE); }
   async get() { return (await this.request(getRequest(), CMD.GET)).cfg; }
   set(cfg) { return this.request(setRequest(cfg), CMD.SET); }
   save() { return this.request(saveRequest(), CMD.SAVE); }

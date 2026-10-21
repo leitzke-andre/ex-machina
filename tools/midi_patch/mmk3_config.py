@@ -15,6 +15,7 @@ the vectors this file produces).
     mmk3_config.py pad 1 40                    pad 1 sends note 40
     mmk3_config.py hal all | none | MASK         our own hardware drivers instead of NI's (1 LEDs, 2 display, 4 buttons, 8 strip, 16 pads, 32 reports, 64 LED colours, 256 main loop, 512 SysTick; until the next power cycle)
     mmk3_config.py slot list | store N [name] | load N   the four preset slots in the device (N = 1..4): store the active config under a name (shown when the slot is loaded with the buttons) / make a slot active (not saved)
+    mmk3_config.py mode [standalone | fl]    the device's mode (Shift + Project switches it on the device; FL Studio mode = the built-in FL mapping)
     mmk3_config.py host [screen] [raw] [quiet] | host off   host mode, as a DAW script sets it (until the next power cycle, SET, RESET or slot load)
     mmk3_config.py text 1..4 WORDS | text clear           a line of text on the screen while host mode 'screen' is on
     mmk3_config.py save | reset [--erase]      keep the active config across power cycles | back to the defaults
@@ -141,11 +142,12 @@ def default_cfg(sens=0xFF, boot_ms=0xFFFF, pad_base=36, enc_mode=1, enc_init=0, 
     return fix_project(c)
 
 BTN_PROJECT = 0
-def fix_project(cfg):
-    """Project (top left) always loads the next preset slot, with and without Shift: the firmware enforces it on every config it takes (cfg_fixed()
-    in translate.c), so every config made here carries it too and reads back unchanged."""
+def fix_project(cfg, fl=False):
+    """Project (top left) is fixed: in Standalone mode it loads the next preset slot, in FL Studio mode (fl) it sends CC 38 for the script; with Shift
+    it switches the mode. The firmware enforces it on every config it takes (cfg_fixed() in translate.c), so every config made here carries it too and
+    reads back unchanged."""
     c = bytearray(cfg)
-    c[FIELDS['btn_act'][0] + BTN_PROJECT] = ACT_SLOT; c[FIELDS['btn_cc'][0] + BTN_PROJECT] = 8
+    c[FIELDS['btn_act'][0] + BTN_PROJECT] = ACT_CC if fl else ACT_SLOT; c[FIELDS['btn_cc'][0] + BTN_PROJECT] = 38 if fl else 8
     c[FIELDS['btn_act2'][0] + BTN_PROJECT] = ACT_NONE; c[FIELDS['btn_cc2'][0] + BTN_PROJECT] = 0xFF     # with Shift: the same
     return bytes(c)
 
@@ -252,7 +254,7 @@ def slot_store_request(n, name=None): return message(CMD_SLOT_STORE, bytes([n]) 
 def slot_load_request(n): return message(CMD_SLOT_LOAD, bytes([n]))
 def slots_request(): return message(CMD_SLOTS)
 CMD_CAPTURE, CMD_HANG = 0x1D, 0x1F                    # diagnostics (docs/clean-firmware-plan.md): raw pad capture, the watchdog test
-CAP_BASE, CAP_END = 0x20001C20, 0x200041F0            # where the capture lands in the device's RAM (header of 16 bytes, then the frames)
+CAP_BASE, CAP_END = 0x20001C20, 0x20004000            # where the capture lands in the device's RAM (header of 16 bytes, then the frames; above it the FL mode stash)
 def capture_request(mask, period_ms=1): return message(CMD_CAPTURE, bytes([mask & 0x7F, (mask >> 7) & 0x7F, (mask >> 14) & 3, period_ms & 0x7F]))
 def hang_request(): return message(CMD_HANG, b'HANG')     # send it with Device.hang(): once, never retried
 CMD_HAL = 0x1C                                         # which of our own drivers (hal.c) replace the stock ones: bit 0 LED refresh, bit 1 display sender, bit 2 button scan, bit 3 strip read, bit 4 pads, bit 5 reports and dispatcher, bit 6 LED colours; a second byte 1 = run our LED chip start-up once
@@ -262,6 +264,13 @@ HAL_FLAG_LED_INIT, HAL_FLAG_NEXT_BOOT, HAL_FLAG_REBOOT, HAL_FLAG_NEXT_BOOT_USB =
 HAL2_LOOP, HAL2_TICK = 0x01, 0x02                     # the second mask byte: our main-loop work, our SysTick handler
 HAL2_ALL = 0x03
 def hal_request(mask, flags=0, mask2=0): return message(CMD_HAL, bytes([mask & 0x7F]) + (bytes([flags & 0x7F, mask2 & 0x7F]) if flags or mask2 else b''))
+CMD_MODE = 0x22                                        # the two modes (Shift + Project on the device): Standalone and FL Studio
+MODE_NAMES = ('standalone', 'fl')
+def mode_request(mode=None):
+    """MODE: without an argument a query, else 'standalone' / 'fl' (or 0 / 1). The device answers 62 <status> <mode>, and sends the same message,
+    unasked, after every switch (Shift + Project, or a mapping from a host ending FL Studio mode)."""
+    if mode is None: return message(CMD_MODE)
+    return message(CMD_MODE, bytes([MODE_NAMES.index(mode) if isinstance(mode, str) else int(mode)]))
 CMD_HOST, CMD_TEXT = 0x20, 0x21                        # host mode for a DAW script (docs/remap-protocol.md): who owns the screen and the pads; text lines on the screen
 HOST_SCREEN, HOST_RAW, HOST_QUIET = 1, 2, 4            # the picture is the host's text / pads send 36 + their number - 1 whatever the mode / no firmware messages
 TEXT_COLS = 21
@@ -286,7 +295,8 @@ def parse_reply(msg):
     cmd, data = m[3] - REPLY, m[4:]
     if cmd == CMD_INFO:
         proto, size, flags = data[0], data[1] | (data[2] << 7), data[3]
-        return {'cmd': cmd, 'protocol': proto, 'cfg_size': size, 'saved': bool(flags & 1), 'unsaved_changes': bool(flags & 2), 'loaded_from_flash': bool(flags & 4), 'version': data[4] if len(data) > 4 else None}
+        return {'cmd': cmd, 'protocol': proto, 'cfg_size': size, 'saved': bool(flags & 1), 'unsaved_changes': bool(flags & 2), 'loaded_from_flash': bool(flags & 4), 'version': data[4] if len(data) > 4 else None,
+                'mode': MODE_NAMES[data[5]] if len(data) > 5 and data[5] < len(MODE_NAMES) else None}
     if cmd == CMD_GET: return {'cmd': cmd, 'cfg': unpack7(data)}
     if cmd == CMD_PEEK:
         addr = 0
@@ -298,6 +308,7 @@ def parse_reply(msg):
     if cmd == CMD_HAL:
         n = lambda o: data[o] | data[o + 1] << 7 | data[o + 2] << 14 if len(data) >= o + 3 else None
         return {'cmd': cmd, 'status': data[0], 'hal': data[1] if len(data) > 1 else None, 'led_ok': n(2), 'led_fail': n(5), 'strip_ok': n(8), 'strip_fail': n(11), 'hal2': data[14] if len(data) > 14 else None, 'own_init': data[15] if len(data) > 15 else None, 'own_usb': data[16] if len(data) > 16 else None}
+    if cmd == CMD_MODE: return {'cmd': cmd, 'status': data[0], 'status_text': STATUS.get(data[0], '?'), 'mode': MODE_NAMES[data[1]] if len(data) > 1 and data[1] < 2 else None}
     if cmd == CMD_HOST: return {'cmd': cmd, 'status': data[0], 'status_text': STATUS.get(data[0], '?'), 'host': data[1] if len(data) > 1 else None}
     if cmd in (CMD_SET, CMD_SAVE, CMD_RESET, CMD_SLOT_STORE, CMD_SLOT_LOAD, CMD_CAPTURE, CMD_HANG):
         r = {'cmd': cmd, 'status': data[0], 'status_text': STATUS.get(data[0], '?')}
@@ -399,6 +410,10 @@ def _maschine_modes():
     act('Group', ACT_CHANNEL, 0); act('Group', ACT_CHANNEL, 1, shifted=True)                                                # MIDI channel next / previous (kept when unplugged)
     return bytes(c)
 
+def fl_cfg():
+    """The FL Studio mode's mapping, built into the firmware (build_patch.py writes it at CFG_FL_ADDR): the 'FL Studio' preset with Project as a plain CC."""
+    return fix_project(_fl_studio(), fl=True)
+
 def _beatmaker3():
     """BeatMaker 3 learns everything (Focus Actions: trigger pad 1-64, modes, macros 1-16, transport, bank / page / octave steps), so the numbers are free; what helps is
     that every control sends a distinct message once per press. Pads 1-16 = notes 0-15 (BeatMaker's Single Channel mode counts from note 0), Left / Right = the next / previous page of
@@ -412,7 +427,8 @@ def _beatmaker3():
     return bytes(c)
 
 FL_SHIFT_CC = {'Tap': 102, 'Left': 103, 'Right': 104, 'Plug-in': 105, 'Pattern': 106, 'Step': 107, 'Browser': 108, 'Erase': 109,
-               'Play': 110, 'Encoder Push': 112}       # what these buttons send with Shift held (the FL Studio script's second layer)
+               'Play': 110, 'Encoder Push': 112, 'Rec': 113, 'Restart': 114, 'Solo': 115}   # what these buttons send with Shift held (the FL Studio script's second layer)
+FL_SHIFT_REPORT_CC = 111                               # FL Studio mode: the firmware sends Shift down / up as this CC (translate.c FL_SHIFT_REPORT_CC)
 
 def _fl_studio():
     """For the FL Studio device script (integrations/fl_studio/, docs/fl-studio.md). Every button the script uses sends NI's CC as a gate (the script sees
@@ -624,6 +640,9 @@ def main(argv=None):
         elif rest[0] == 'store' and len(rest) > 1 and rest[1] in '1234': show(dev.slot_store(int(rest[1]) - 1, ' '.join(rest[2:]) or None))
         elif rest[0] == 'load' and len(rest) > 1 and rest[1] in '1234': show(dev.slot_load(int(rest[1]) - 1))
         else: raise SystemExit('slot list | slot store 1..4 [name] | slot load 1..4')
+    elif cmd == 'mode':                                  # mode [standalone | fl]: which mode the device is in, or switch (Shift + Project on the device)
+        if rest and rest[0] not in MODE_NAMES: raise SystemExit('mode [standalone | fl]')
+        print(json.dumps(dev.request(mode_request(rest[0] if rest else None), CMD_MODE)))
     elif cmd == 'host':                                  # host mode: host [screen] [raw] [quiet] | host off (what a DAW script sets; RAM only)
         f = 0
         words = {'screen': HOST_SCREEN, 'raw': HOST_RAW, 'quiet': HOST_QUIET, 'off': 0}

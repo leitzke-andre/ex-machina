@@ -38,13 +38,15 @@ SCALES_ADDR = 0x0800E6C0             # 24 scales as little-endian 16-bit masks (
 HW_ADDR = 0x0800E700                 # hardware tables for our own drivers (hal.c): hw_blob()
 LEDTAB_ADDR = 0x0800E780             # the LED colour tables, copied at build time from the user's stock image (led_tables()): no NI data in the repository
 LEDTAB_SRC, LEDTAB_LEN = 0x08009077, 0x4FC        # up to the end of the four-cell palette (19 colours x 16)
-CODE_ADDR = 0x0800EC80
+CODE_ADDR = 0x0800EE80                # (512 bytes above the LED tables: the FL Studio mode's mapping, CFG_FL_ADDR)
 
 def c_define(name):
     """The first hex literal of `#define NAME ...` in translate.c: the C source is the one place that knows the addresses it uses."""
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'translate.c')).read()
     return int(re.search(r'#define\s+' + name + r'\b[^\n]*?(0x[0-9A-Fa-f]+)', src).group(1), 16)
 STATE_ADDR = c_define('ST_ADDR')                 # translator / LED / request state in RAM
+CFG_FL_ADDR = c_define('CFG_FL')                 # the FL Studio mode's built-in mapping (mmk3_config.fl_cfg())
+assert LEDTAB_ADDR + LEDTAB_LEN <= CFG_FL_ADDR and CFG_FL_ADDR + 288 <= CODE_ADDR
 assert (c_define('CFG_DEFAULTS'), c_define('VEL_TABLES'), c_define('CURVE_COUNT'), c_define('FONT_ADDR'), c_define('TXT_ADDR'), c_define('SCALES'), c_define('DESC_DEV_ADDR'),
         c_define('DESC_CFG_ADDR'), c_define('SAVE_PAGE'), c_define('SLOT_BASE'), c_define('PAT_PAGE'), c_define('HW_ADDR'), c_define('LEDTAB_ADDR')) == \
        (CFG_ADDR, VEL_TABLE_ADDR, CURVE_COUNT_ADDR, FONT_ADDR, TXT_ADDR, SCALES_ADDR, DESC_DEV_ADDR, DESC_CFG_ADDR, SAVE_PAGE, SLOT_BASE, PAT_PAGE, HW_ADDR, LEDTAB_ADDR), 'the layout constants of build_patch.py and translate.c differ'
@@ -52,7 +54,7 @@ assert (c_define('CFG_DEFAULTS'), c_define('VEL_TABLES'), c_define('CURVE_COUNT'
 # The config block layout, its defaults and the action / LED-flag numbers live in mmk3_config.py (the host side of the protocol)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mmk3_config import (ACT_CC, ACT_NOTE, ACT_START, ACT_CONT, ACT_STOP, ACT_MMC, ACT_NONE, BTN_PLAY, BTN_REC, BTN_STOP,
-                         LF_BTN_IDLE, LF_BTN_PRESS, LF_PAD_IDLE, LF_PAD_HIT, LF_STRIP, PAD_LABEL, NI_BUTTON_CC, FW_NAME as _FW_NAME, FW_VERSION, SCALE_NAMES, ARP_TYPES, ARP_RATES, default_cfg, CFG_SIZE as _CFG_SIZE)
+                         LF_BTN_IDLE, LF_BTN_PRESS, LF_PAD_IDLE, LF_PAD_HIT, LF_STRIP, PAD_LABEL, NI_BUTTON_CC, FW_NAME as _FW_NAME, FW_VERSION, SCALE_NAMES, ARP_TYPES, ARP_RATES, default_cfg, fl_cfg, CFG_SIZE as _CFG_SIZE)
 assert _CFG_SIZE == CFG_SIZE, 'mmk3_config.CFG_SIZE and build_patch.CFG_SIZE differ'
 assert c_define('FW_VERSION') == FW_VERSION, 'FW_VERSION differs between mmk3_config.py and translate.c'
 
@@ -138,7 +140,7 @@ TEXTS = {
     **{f'T_CURVE{i}': n for i, n in enumerate(['SOFT 3', 'SOFT 2', 'SOFT 1', 'LINEAR', 'HARD 1', 'HARD 2', 'HARD 3', 'FIXED', 'CUSTOM'])},
     'T_CHORDS': 'CHORDS', 'T_SCALE': 'SCALE', 'T_CHORD': 'CHORD TYPE', 'T_ENCODER': 'ENCODER', 'T_STRIP': 'STRIP', 'T_PITCH': 'PITCH BEND', 'T_MOD': 'MOD WHEEL',
     'T_NORMAL': 'CONFIGURED CC', 'T_PROGRAM': 'PROGRAM', 'T_PC': 'PC', 'T_VALUE': 'VALUE', 'T_CC': 'CC',
-    'T_TRIAD': 'TRIAD', 'T_SEVENTH': 'SEVENTH', 'T_SUS2': 'SUS2', 'T_SUS4': 'SUS4', 'T_POWER': 'POWER', 'T_MINOR': 'MINOR', 'T_MAJ9': 'MAJ 9', 'T_MAJ11': 'MAJ 11',
+    'T_TRIAD': 'TRIAD', 'T_SEVENTH': 'SEVENTH', 'T_SUS2': 'SUS2', 'T_SUS4': 'SUS4', 'T_POWER': 'POWER', 'T_MODE': 'MODE', 'T_FLSTUDIO': 'FL STUDIO', 'T_STANDALONE': 'STANDALONE', 'T_WAITFL': 'WAITING FOR FL', 'T_MINOR': 'MINOR', 'T_MAJ9': 'MAJ 9', 'T_MAJ11': 'MAJ 11',
     **{f'T_SCALE{i}': n.upper() for i, n in enumerate(SCALE_NAMES)},
     'T_PAGE': 'PAGE', 'T_ENCPAGE': 'ENC PAGE', 'T_DFU': 'DFU MODE', 'T_FLASHTOLEAVE': 'FLASH TO LEAVE', 'T_STEP': 'STEP', 'T_TRK': 'TRK', 'T_PAT': 'PAT', 'T_RUN': 'RUN', 'T_STOP': 'STOP', 'T_TRACK': 'TRACK', 'T_PATTERN': 'PATTERN', 'T_CLEAR': 'CLEAR', 'T_PATTERNS': 'PATTERNS', 'T_CHANNEL': 'CHANNEL', 'T_SLOT': 'SLOT', 'T_LOADED': 'LOADED', 'T_SAVED': 'SAVED', 'T_EMPTY': 'EMPTY', 'T_ERROR': 'FLASH ERROR', 'T_EXNAME': _FW_NAME.upper(), 'T_VER': f'V{FW_VERSION}', 'T_M0': 'DRUMS', 'T_M1': 'KEYS', 'T_M2': 'CHORDS', 'T_CH': 'CH', 'T_CLK': 'CLK', 'T_SEQ': 'SEQ',
     'T_ARP': 'ARP', 'T_ARPTYPE': 'ARP TYPE', 'T_RATE': 'RATE', 'T_OCT': 'OCTAVES', 'T_LATCH': 'LATCH', 'T_TEMPO': 'TEMPO', 'T_BPM': 'BPM', 'T_CLOCK': 'CLOCK OUT',
@@ -278,6 +280,7 @@ def main():
         print(f'stage 1: stock image, bcdDevice {a.bcd:#06x}, {len(img)} B')
         return
     put(CFG_ADDR, default_cfg(a.sens, a.boot_ms, a.pad_base, {'absolute': 1, 'relative-offset': 0, 'relative': 2}[a.enc_mode], a.enc_init, {'gate': 0, 'toggle': 1, 'trigger': 2}[a.btn_mode], a.vel_shift, a.transport, a.local_leds == 'on', a.pad_colour, a.strip_colour, curve_index)); put(CODE_ADDR, code)
+    put(CFG_FL_ADDR, fl_cfg())                    # the FL Studio mode's mapping (Shift + Project)
     put(DESC_DEV_ADDR, dev); put(DESC_CFG_ADDR, cfg); put(VEL_TABLE_ADDR, vtab)
     put(CURVE_COUNT_ADDR, bytes([9 if a.vel_table else 8]) + b'\0\0\0'); put(FONT_ADDR, FONT); put(TXT_ADDR, texts); put(SCALES_ADDR, scales_blob()); put(HW_ADDR, hw_blob()); put(LEDTAB_ADDR, led_tables(stock))
     if a.stage == 2:

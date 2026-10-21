@@ -14,4 +14,4 @@ mkdir -p "$DEST"
 for f in "$HERE"/Ex-Machina/*.py; do cp "$f" "$DEST/"; done
 echo "installed into $DEST:"; ls "$DEST"
 echo "In FL Studio: Options > MIDI Settings > the Mikro's input > Controller type \"Ex-Machina (Maschine Mikro MK3)\";"
-echo "give the input and the Mikro's output the same Port number. On the device: preset 'FL Studio' (browser tool or mmk3_config.py preset apply fl-studio --save)."
+echo "give the input and the Mikro's output the same Port number. On the device: Shift + Project switches to FL Studio mode (an older firmware: load the preset 'FL Studio')."

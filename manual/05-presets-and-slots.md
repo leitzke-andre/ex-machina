@@ -11,8 +11,9 @@ channel, the start values of the modes. The controller holds three kinds of mapp
 
 ## The Project button: cycling through the slots
 **Project** (top left) loads the **next slot that holds a mapping**: 1 → 2 → 3 → 4 → 1, skipping empty slots. The screen shows `SLOT 2` and the
-slot's name (for example `GROOVE RIDER 2`). This works in **every** mapping, with or without Shift, and cannot be reassigned: whatever a mapping
-says, the firmware keeps Project on the slots, so you can never lose the way to your other mappings.
+slot's name (for example `GROOVE RIDER 2`). This works in **every** mapping and cannot be reassigned: whatever a mapping says, the firmware
+keeps Project on the slots, so you can never lose the way to your other mappings. **Shift + Project** is the other fixed gesture: it switches
+between the Standalone mode (everything in this chapter) and the FL Studio mode (chapter 10).
 
 - The cycle continues from the slot last loaded or stored. After a power-up it starts from the slot that matches the saved mapping, otherwise from slot 1.
 - A loaded slot is **active, not saved**: unplug and the saved mapping is back. To make a slot the power-up mapping, load it and *Save on device*.

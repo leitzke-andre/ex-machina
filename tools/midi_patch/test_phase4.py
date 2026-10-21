@@ -197,8 +197,11 @@ n0 = len(x.d.flash.log); seen = []
 for _ in range(5): x.tap('Project'); x.run(40); seen.append(x.cfg()[F['channel'][0]] + 1)
 check('a config from no slot: Project loads slot 1 first, then 3 and 4 (slot 2 is empty: skipped), then 1 again; nothing written to flash',
       (seen, len(x.d.flash.log) - n0), ([3, 5, 6, 3, 5], 0))
-x.shift_tap('Project'); x.run(40)
-check('Shift + Project does the same (slot 3 -> 4)', x.cfg()[F['channel'][0]] + 1, 6)
+x.shift_tap('Project'); x.run(40); m1 = mc.parse_reply(x.d.ask(mc.info_request())[0])['mode']
+x.shift_tap('Project'); x.run(40); m2 = mc.parse_reply(x.d.ask(mc.info_request())[0])['mode']
+check('Shift + Project is not a slot step but the mode switch (test_mode.py): FL Studio and back, slot 3 still the current one (channel 5)',
+      (m1, m2, x.cfg()[F['channel'][0]] + 1), ('fl', 'standalone', 5))
+x.tap('Project'); x.run(40)
 sc.settle(); x.tap('Project'); sc.run(6, 10)
 check('the screen shows the slot that was loaded (SLOT 1 / LOADED)', sc.fb() == reference('SLOT 1', 'LOADED'), True)
 x.ask(mc.slot_load_request(2)); x.tap('Project'); x.run(40)

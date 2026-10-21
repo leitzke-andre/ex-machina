@@ -22,11 +22,12 @@ python3 tools/midi_patch/mmk3_config.py info
 | `slot load N` | Make slot *N* active (not saved) |
 | `host [screen] [raw] [quiet]` / `host off` | Host mode, as a DAW script sets it (firmware generation 11): the screen shows the host's text, the pads send notes 36-51 whatever the pad mode, no messages of the firmware's own |
 | `text 1..4 WORDS` / `text clear` | A line of text on the screen while host mode `screen` is on |
+| `mode [standalone\|fl]` | Which mode the device is in, or switch it (Shift + Project does the same on the device; chapter 10) |
 | `save` | Keep the active mapping across power cycles |
 | `reset [--erase]` | Back to the defaults; with `--erase` the saved mapping is erased as well |
 
 Button names are those printed on the device (`Play`, `Fixed Vel`, `Note Repeat`, `Encoder Push`...). **Project** cannot be changed: it always
-loads the next preset slot.
+loads the next preset slot (Shift + Project switches the mode).
 
 ## Examples
 ```bash

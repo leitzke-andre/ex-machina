@@ -20,6 +20,7 @@ class Project:
         self.playing = self.recording = False; self.loop = 0; self.pos = 0; self.step = 0
         self.tempo = 140.0; self.metronome = False; self.swing = 0
         self.hint = ''; self.log = []; self.out = []; self.windows = set()
+        self.steps = {}; self.graph = False; self.precount = False; self.looprec = False; self.recpps = 24
 
 P = None
 
@@ -41,6 +42,10 @@ def install(fl2026=True):
         for c in P.ch: c['solo'] = False
         C(i)['solo'] = on; log('soloChannel', i)
     def sel1(i, g=False): P.sel = i; log('selectOneChannel', i)
+    def stepset(index, patNum, step, param, value, g=False):          # (FL's step parameters; `index` is global with useGlobalIndex)
+        i = index - GLOBAL if g else index; log('setStepParameterByIndex', i, patNum, step, param, value); P.steps[(i, patNum, step, param)] = value
+    def stepget(i, step, param, g=False): return P.steps.get((i, P.cur, step, param), -1)
+    def graph(temporary, param, step, index, g=True): P.graph = True; log('showGraphEditor', param, step, index - GLOBAL if g else index)
     def setvol(i, v, pick=0, g=False): C(i)['vol'] = v; log('setChannelVolume', i, v)
     def setpan(i, v, pick=0, g=False): C(i)['pan'] = v; log('setChannelPan', i, v)
     channels = _mod('channels', selectedChannel=lambda canBeNone=False, offset=0, g=False: P.sel, channelCount=lambda g=False: len(P.ch),
@@ -48,7 +53,10 @@ def install(fl2026=True):
                     isChannelMuted=lambda i, g=False: C(i)['mute'], muteChannel=mute, isChannelSolo=lambda i, g=False: C(i)['solo'], soloChannel=solo,
                     selectOneChannel=sel1, getChannelVolume=lambda i, mode=False, g=False: C(i)['vol'], setChannelVolume=setvol,
                     getChannelPan=lambda i, g=False: C(i)['pan'], setChannelPan=setpan,
-                    getGridBit=lambda i, pos, g=False: pos in C(i)['grid'], setGridBit=setgrid, showEditor=lambda i, v=-1: log('showEditor', i))
+                    getGridBit=lambda i, pos, g=False: pos in C(i)['grid'], setGridBit=setgrid, showEditor=lambda i, v=-1, g=False: log('showEditor', i),
+                    getChannelIndex=lambda i: i + GLOBAL, getCurrentStepParam=stepget, setStepParameterByIndex=stepset,
+                    showGraphEditor=graph, isGraphEditorVisible=lambda: P.graph, quickQuantize=lambda i, startOnly=1, g=False: log('quickQuantize', i, startOnly),
+                    focusEditor=lambda i, g=False: log('focusEditor', i))
     def jump(i): log('jumpToPattern', i); P.cur = i; (P.pat.append(dict(name='Pattern %d' % i, color=0x5F748B, length=4)) if i == len(P.pat) + 1 else None)
     def clone(index=None): log('clonePattern', index); P.pat.append(dict(P.pat[P.cur - 1])); P.cur = len(P.pat)
     pat_fns = dict(patternNumber=lambda: P.cur, patternCount=lambda: len(P.pat), patternMax=lambda: 999, getPatternName=lambda i: P.pat[i - 1]['name'],
@@ -63,11 +71,16 @@ def install(fl2026=True):
     def settn(i, flags=0): P.track = i; log('setTrackNumber', i)
     mixer = _mod('mixer', trackNumber=lambda: P.track, setTrackNumber=settn, getTrackName=lambda i: T(i)['name'], getTrackColor=lambda i: T(i)['color'],
                  getTrackVolume=lambda i, mode=0: T(i)['vol'], setTrackVolume=settv, getTrackPan=lambda i: T(i)['pan'], setTrackPan=settp,
-                 getCurrentTempo=lambda asInt=False: int(P.tempo * 1000) if asInt else P.tempo, getSongStepPos=lambda: P.step)
+                 getCurrentTempo=lambda asInt=False: int(P.tempo * 1000) if asInt else P.tempo, getSongStepPos=lambda: P.step, getRecPPS=lambda: P.recpps,
+                 muteTrack=lambda i, value=-1: (T(i).__setitem__('mute', (not T(i).get('mute')) if value == -1 else bool(value)), log('muteTrack', i, value)),
+                 isTrackMuted=lambda i: bool(T(i).get('mute')), isTrackSolo=lambda i: bool(T(i).get('solo')),
+                 soloTrack=lambda i, value=-1, mode=-1: (T(i).__setitem__('solo', (not T(i).get('solo')) if value == -1 else bool(value)), log('soloTrack', i, value)))
     def gt(cmd, value, pme=0, flags=0):
         log('globalTransport', cmd, value)
         if cmd == FPT_Metronome: P.metronome = not P.metronome
         if cmd == FPT_TempoJog: P.tempo += value / 10.0
+        if cmd == FPT_CountDown: P.precount = not P.precount
+        if cmd == FPT_LoopRecord: P.looprec = not P.looprec
         return 1
     def start(): P.playing = not P.playing; log('start')
     def stop(): P.playing = False; P.pos = 0; log('stop')
@@ -95,15 +108,18 @@ def install(fl2026=True):
     def win(name): return lambda *a: log(name, *a)
     ui = _mod('ui', jog=win('jog'), next=win('next'), previous=win('previous'), enter=win('enter'), left=win('left'), right=win('right'),
               showWindow=lambda w: (P.windows.add(w), log('showWindow', w)), hideWindow=lambda w: (P.windows.discard(w), log('hideWindow', w)),
-              setFocused=win('setFocused'), getHintMsg=lambda: P.hint, isMetronomeEnabled=lambda: P.metronome)
-    general = _mod('general', undoUp=win('undoUp'), undoDown=win('undoDown'), getVersion=lambda: 40)
+              setFocused=win('setFocused'), getHintMsg=lambda: P.hint, isMetronomeEnabled=lambda: P.metronome, setHintMsg=lambda m: setattr(P, 'hint', m),
+              isPrecountEnabled=lambda: P.precount, isLoopRecEnabled=lambda: P.looprec)
+    general = _mod('general', undoUp=win('undoUp'), undoDown=win('undoDown'), getVersion=lambda: 40, dumpScoreLog=lambda time, silent=False: log('dumpScoreLog', time, silent))
     device = _mod('device', midiOutMsg=lambda m, *a: P.out.append(('msg', m)), midiOutSysex=lambda b: P.out.append(('sysex', bytes(b))),
                   isAssigned=lambda: True, getName=lambda: 'Maschine Mikro MK3')
-    midi = _mod('midi', FPT_TapTempo=106, FPT_Metronome=110, FPT_TempoJog=105, widMixer=0, widChannelRack=1, widPlaylist=2, widPianoRoll=3, widBrowser=4, widPlugin=5)
+    midi = _mod('midi', FPT_TapTempo=106, FPT_Metronome=110, FPT_TempoJog=105, FPT_CountDown=115, FPT_LoopRecord=113, FPT_Copy=51, FPT_Paste=52,
+                widMixer=0, widChannelRack=1, widPlaylist=2, widPianoRoll=3, widBrowser=4, widPluginEffect=6, widPluginGenerator=7)
     for m in (channels, patterns, mixer, transport, plugins, ui, general, device, midi): sys.modules[m.__name__] = m
     return P
 
-FPT_TapTempo, FPT_Metronome, FPT_TempoJog = 106, 110, 105
+FPT_TapTempo, FPT_Metronome, FPT_TempoJog, FPT_CountDown, FPT_LoopRecord = 106, 110, 105, 115, 113   # (FL's values: API stubs midi/__gt_commands.py)
+GLOBAL = 100                                        # the stand-in's global channel index = the Channel Rack position + 100, so a mix-up shows
 
 class Event:
     """FL's event object, as far as the script reads it."""

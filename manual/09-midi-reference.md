@@ -44,6 +44,7 @@ The setup page and `mmk3_config.py` use SysEx messages with the manufacturer byt
 | `13` SAVE / `14` RESET | Keep the mapping in flash / back to the defaults (optionally erasing the saved one) |
 | `15` / `16` / `17` | Store a slot (with a name) / load a slot / list the slots |
 | `20` HOST / `21` TEXT | Host mode for a DAW script (generation 11): the screen shows the host's four text lines, the pads send notes 36-51 whatever the pad mode, the firmware's own messages can be turned off; TEXT writes a line (chapter 10) |
+| `22` MODE | Which mode the device is in (Standalone / FL Studio), or switch it; the device also announces every switch (chapter 10) |
 | `1E` PEEK | Read-only diagnostics |
 
 The full protocol and the layout of the mapping are in [`docs/remap-protocol.md`](../docs/remap-protocol.md).

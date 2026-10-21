@@ -5,7 +5,7 @@ Two mappings come with every install: **Default** (plain MIDI: every button send
 (empty = the same as without Shift). The groups are those of the setup page's *Buttons* tab.
 
 Buttons that send a CC send 127 when pressed and 0 when released (*gate*; *toggle* and *trigger* are options, per button or for all). **Project**
-is the same in every mapping: it loads the next preset slot (chapter 5).
+is the same in every mapping: it loads the next preset slot (chapter 5), and Shift + Project switches to the FL Studio mode (chapter 10).
 
 ### Transport
 | Button | Default | Maschine-like modes | Shift + |
@@ -63,7 +63,7 @@ is the same in every mapping: it loads the next preset slot (chapter 5).
 | Left | CC 41 | transpose −1 | transpose −12 |
 | Right | CC 42 | transpose +1 | transpose +12 |
 | Shift | CC 43 | Shift | |
-| **Project** | **next preset slot** | **next preset slot** | (the same) |
+| **Project** | **next preset slot** | **next preset slot** | **Standalone / FL Studio mode** |
 | Favorites | CC 39 | next program | |
 | Browser | CC 40 | previous program | program 0 |
 
@@ -81,6 +81,8 @@ is the same in every mapping: it loads the next preset slot (chapter 5).
 | Push | CC 8 | CC 8 |
 | Touch | CC 9 | CC 9 |
 
-### Special gesture
+### Special gestures
+**Shift + Project** switches between the Standalone mode (the mappings in this chapter) and the FL Studio mode (chapter 10), in every mapping.
+
 **Shift + Stop + Erase held for 2 seconds** shows `DFU MODE` and restarts the controller into its bootloader, ready to be flashed (chapter 7).
 It works in every mapping.

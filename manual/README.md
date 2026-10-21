@@ -29,5 +29,6 @@ This manual is for **using** the firmware and the flashing tools. The design not
 - **Plug and play**: one USB-MIDI port, the usual General MIDI drum notes on the pads (36-51), CCs on the buttons, CC 7 on the encoder, CC 1 on the strip.
 - **Standalone functions**: pick the *Maschine-like modes* preset and the buttons do what is printed on them (Pad Mode, Keyboard, Chords, Fixed Vel, Note Repeat, Tap, Step...), with feedback on the screen.
 - **Four presets in the device**: store four mappings (for example one per app) and press **Project**, the top-left button, to cycle through them without a computer.
+- **An FL Studio mode**: **Shift + Project** switches the controller to a built-in mapping for the FL Studio script (transport, Channel Rack, step sequencer, mixer, plug-ins) and back.
 - **Configured from a browser**: the setup page (Chrome or Edge) edits every button, pad and setting, keeps your own presets, and installs or removes the firmware.
 - **Always reversible**: the bootloader is never touched; NI's original firmware goes back with one click or one command.

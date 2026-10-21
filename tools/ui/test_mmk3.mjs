@@ -66,7 +66,7 @@ if (process.argv.length >= 5) {
   const dev = new M.Mk3(transport, { timeout: 2000 });
 
   const info = await dev.info();
-  check('emulated device: INFO (protocol 2, 274 bytes, nothing saved)', same(info, { cmd: 16, protocol: 2, cfg_size: 274, saved: false, unsaved_changes: false, loaded_from_flash: false, version: 0 }), JSON.stringify(info));
+  check('emulated device: INFO (protocol 2, 274 bytes, nothing saved, Standalone mode)', same(info, { cmd: 16, protocol: 2, cfg_size: 274, saved: false, unsaved_changes: false, loaded_from_flash: false, version: 0, mode: 'standalone' }), JSON.stringify(info));
   check('GET returns the defaults', M.equal(await dev.get(), D));
   let cfg = M.fromDict({ channel: 4 }, D);
   const b = M.D.FIELDS.btn_cc[0], a = M.D.FIELDS.btn_act[0];

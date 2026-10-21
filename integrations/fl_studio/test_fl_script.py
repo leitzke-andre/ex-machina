@@ -26,11 +26,14 @@ clock = [1000.0]
 exm_core.now = lambda: clock[0]
 def advance(s): clock[0] += s
 
+MODE_FL, MODE_SA = bytes([0xF0, 0x7D, 0x4D, 0x4B, 0x62, 0, 1, 0xF7]), bytes([0xF0, 0x7D, 0x4D, 0x4B, 0x62, 0, 0, 0xF7])
 def fresh(reply=True):
-    """A new project and controller, started like FL starts it; reply: the device answers HOST (a firmware with host mode)."""
+    """A new project and controller, started like FL starts it, the device in FL Studio mode; reply: the device answers MODE and HOST (a firmware
+    with modes and host mode), else neither (an older firmware: the script runs as before after a second)."""
     flsim.P = flsim.Project(); global P; P = flsim.P
     c = exm_core.Controller(); c.init()
-    if reply: c.on_sysex(Event(0xF0, sysex=bytes([0xF0, 0x7D, 0x4D, 0x4B, 0x60, 0, 1, 0xF7])))
+    if reply: c.on_sysex(Event(0xF0, sysex=MODE_FL)); c.on_sysex(Event(0xF0, sysex=bytes([0xF0, 0x7D, 0x4D, 0x4B, 0x60, 0, 1, 0xF7])))
+    else: advance(1.1)
     c.idle(); P.log.clear(); P.out.clear()
     return c
 def cc(c, n, v): e = Event(0xB0 | tb.CHANNEL, n, v); c.midi(e); return e.handled
@@ -48,7 +51,10 @@ def screen(c): return [out.clean(x).rstrip() for x in c.lines]
 # ---- the start --------------------------------------------------------------------------------------------------------------------------------------
 flsim.P = P = flsim.Project()
 c = exm_core.Controller(); c.init()
-check('OnInit asks for host mode: HOST 1 (screen)', hosts(), [tb.HOST_SCREEN])
+check('OnInit asks the device for its mode (SysEx 22), and nothing else yet', sysexes(), [bytes([0xF0, 0x7D, 0x4D, 0x4B, tb.CMD_MODE, 0xF7])])
+check('... until it answers, the controller\'s MIDI does not reach FL (a button is swallowed, nothing called)', (cc(c, tb.BUTTON_CC['Play'], 127), calls('start')), (True, []))
+P.out.clear(); c.on_sysex(Event(0xF0, sysex=MODE_FL))
+check('the device is in FL Studio mode: the script asks for host mode, HOST 1 (screen)', hosts(), [tb.HOST_SCREEN])
 leds = [m for k, m in P.out if k == 'msg']
 check('... and sets every LED the script uses (16 pads + the script\'s buttons), as Note On on channel 2', (len(leds) >= 16 + 15, all(m & 0xFF == 0x91 for m in leds)), (True, True))
 check('... no screen yet (waiting for the answer)', [b for b in sysexes() if b[4] in (0x01, tb.CMD_TEXT)], [])
@@ -60,7 +66,10 @@ check('... the screen: mode, channel, pattern, tempo and transport', screen(c), 
 P.out.clear(); c.idle(); c.idle()
 check('nothing changed: nothing is sent again', P.out, [])
 
-c = fresh(reply=False); advance(1.1); c.idle()
+flsim.P = P = flsim.Project(); c = exm_core.Controller(); c.init(); c.idle(); P.out.clear(); advance(1.1); c.idle()
+check('no answer to MODE within a second (older firmware): the script takes over as before, HOST 1', hosts(), [tb.HOST_SCREEN])
+c = fresh(reply=False)
+advance(1.1); c.idle()
 check('no answer within a second (older firmware): the screen goes out as pixel regions', (c.host_ok, len(c.px_queue)), (False, 1))
 sent = [b for b in sysexes() if b[4] == 0x01]
 check('... one region per idle call, at least 10 ms apart (half 0, then half 1)', ([b[6] for b in sent], len(sent[0]) if sent else 0), ([0], 9 + 293 + 1))
@@ -70,6 +79,21 @@ P.out.clear(); advance(2.1); c.idle(); advance(0.02); c.idle(); advance(0.02); c
 check('... drawn again every 2 s (the firmware may have drawn its own screen in between)', [b[6] for b in sysexes() if b[4] == 0x01], [0, 2])
 press(c, 'Step'); check('... and no HOST is sent to a firmware that does not know it', hosts(), [])
 
+# ---- the device's two modes ---------------------------------------------------------------------------------------------------------------------------
+flsim.P = P = flsim.Project(); c = exm_core.Controller(); c.init(); P.out.clear()
+c.on_sysex(Event(0xF0, sysex=MODE_SA)); c.idle(); advance(1.1); c.idle()
+check('the device in Standalone mode: the script stays passive (no HOST, no LEDs, no screen, also after a second)', P.out, [])
+check('... and FL sees nothing of the controller: buttons and pads are swallowed, no FL call', (press(c, 'Play'), pad(c, 1), calls('start')), ((True, True), True, []))
+c.on_sysex(Event(0xF0, sysex=MODE_FL)); c.on_sysex(Event(0xF0, sysex=bytes([0xF0, 0x7D, 0x4D, 0x4B, 0x60, 0, 1, 0xF7]))); c.idle()
+check('Shift + Project on the device (it announces FL Studio mode): the script takes over, HOST 1, LEDs, the four lines', (hosts(), len([m for k, m in P.out if k == 'msg']) >= 31, len([b for b in sysexes() if b[4] == tb.CMD_TEXT])), ([tb.HOST_SCREEN], True, 4))
+check('... and the controller works in FL (Play)', (press(c, 'Play'), calls('start')), ((True, True), [()]))
+P.out.clear(); c.on_sysex(Event(0xF0, sysex=MODE_SA)); c.idle(); press(c, 'Stop'); advance(2.5); c.idle()
+check('Shift + Project again (Standalone announced): the script stops at once: nothing sent, the controller swallowed (Stop not called)', (P.out, calls('stop')), ([], []))
+c.deinit(); check('... and closing FL sends nothing either (the device already left host mode)', P.out, [])
+c = fresh(); press(c, 'Project')
+check('Project (a plain CC in FL Studio mode): the Playlist, shown and focused', (calls('showWindow'), calls('setFocused'), screen(c)[1]), ([(midi.widPlaylist,)], [(midi.widPlaylist,)], 'WINDOW'))
+press(c, 'Project'); check('... again: the Channel Rack', calls('showWindow')[-1], (midi.widChannelRack,))
+
 # ---- transport --------------------------------------------------------------------------------------------------------------------------------------
 c = fresh()
 check('Play: transport.start, the CC goes no further (press and release)', (press(c, 'Play'), calls('start')), ((True, True), [()]))
@@ -77,7 +101,7 @@ check('... the Play LED is bright while FL plays', c.leds[tb.BUTTON_LED['Play']]
 press(c, 'Stop'); check('Stop: transport.stop, the Play LED dims', (calls('stop'), c.leds[tb.BUTTON_LED['Play']]), ([()], 0x7C))
 press(c, 'Rec'); check('Rec: transport.record, its LED lit', (calls('record'), c.leds[tb.BUTTON_LED['Rec']]), ([()], 0x7F))
 P.log.clear(); press(c, 'Restart'); check('Restart: to the start and play', (calls('setSongPos'), calls('start')), ([(0,)], [()]))
-P.log.clear(); P.playing = False; press(c, 'Shift+Play'); check('Shift + Play: the same', (calls('setSongPos'), calls('start')), ([(0,)], [()]))
+P.log.clear(); press(c, 'Shift+Play'); check('Shift + Play: the Score Log (the last 5 minutes played go into the pattern), shown', (calls('dumpScoreLog'), screen(c)[1]), ([(300, False)], 'SCORE LOG'))
 press(c, 'Tap'); check('Tap: tap tempo', calls('globalTransport')[-1], (midi.FPT_TapTempo, 1))
 press(c, 'Shift+Tap'); check('Shift + Tap: metronome, shown on the screen', (calls('globalTransport')[-1], screen(c)[1:3]), ((midi.FPT_Metronome, 1), ['METRONOME', 'ON']))
 press(c, 'Follow'); check('Follow: pattern / song mode, LED lit in song mode', (calls('setLoopMode'), c.leds[tb.BUTTON_LED['Follow']]), ([()], 0x7F))
@@ -94,7 +118,7 @@ check('... the pad LEDs show the FPC pad colours (pad 1 green, pad 2 blue)', (c.
 press(c, 'Step')
 check('Step: step mode, HOST 3 (the pads become a grid), its LED lit, title STEP 1/1', (hosts(), c.leds[tb.BUTTON_LED['Step']], screen(c)[0]), ([3], 0x7F, 'STEP 1/1'))
 check('... pad 1 sets step 1 of the selected channel, the note does not play', (pad(c, 1), calls('setGridBit')), (True, [(0, 0, 1)]))
-check('... lit in the channel\'s colour (red), steps 5, 9, 13 marked dim white, others dark', [c.leds[tb.PAD_LED[n]] for n in (1, 2, 5)], [out.code(1, 3), 0, out.code(17, 0)])
+check('... lit in the channel\'s colour (red), steps 5, 9, 13 marked dim white, other off steps dim in the channel colour', [c.leds[tb.PAD_LED[n]] for n in (1, 2, 5)], [out.code(1, 3), out.code(1, 0), out.code(17, 0)])
 pad(c, 1); check('... pad 1 again clears it', calls('setGridBit')[-1], (0, 0, 0))
 P.pat[0]['length'] = 8; press(c, 'Right'); pad(c, 3)
 check('a pattern of 8 beats: Right = steps 17-32, pad 3 = step 19', (c.page['step'], calls('setGridBit')[-1], screen(c)[0]), (1, (0, 18, 1), 'STEP 2/2'))
@@ -149,8 +173,76 @@ check('Shift + Plug-in: presets next / previous', (calls('nextPreset'), calls('p
 press(c, 'Browser'); enc(c, 2); cc(c, 8, 127); cc(c, 8, 0)
 check('Browser: shown and focused; encoder = next, push = enter', (calls('showWindow'), calls('next'), calls('enter')), ([(midi.widBrowser,)], [(), ()], [()]))
 press(c, 'Shift+Browser'); check('Shift + Browser: hidden, no target', (calls('hideWindow'), c.target), ([(midi.widBrowser,)], None))
-press(c, 'Favorites'); check('Favorites: the selected channel\'s plug-in window', calls('showEditor'), [(3,)])
+P.log.clear(); press(c, 'Favorites'); check('Favorites: the selected channel\'s plug-in window', calls('showEditor'), [(3,)])
 check('the encoder touch sends nothing in the preset (a learn would grab it)', 'Encoder Touch' in tb.BUTTON_CC, False)
+
+# ---- the step editor, Shift, the strip, focus and the hint bar (the 2026-10-21 research: FLkey / Fire / DrivenByMoss ideas) ----------------------------
+import exm_settings
+def note(c, n, vel, on=True):
+    e = Event((0x90 if on else 0x80) | tb.CHANNEL, tb.PAD_NOTE[n], vel if on else 0); c.midi(e); c.idle(); return e.handled
+def shift(c, down): e = Event(0xB0 | tb.CHANNEL, tb.SHIFT_REPORT_CC, 127 if down else 0); c.midi(e); c.idle(); return e.handled
+c = fresh(); press(c, 'Step'); P.log.clear()
+note(c, 1, 112); note(c, 1, 0, False)
+check('Step mode: a pad hit sets the step with the hit\'s velocity (112, FL step parameter 1, global channel index), the screen says so',
+      (calls('setGridBit'), calls('setStepParameterByIndex'), screen(c)[1:3]), ([(0, 0, 1)], [(0, 1, 0, 1, 112)], ['STEP 1', 'VELOCITY 112']))
+P.log.clear(); note(c, 1, 90); held_led = c.leds[tb.PAD_LED[1]]; note(c, 1, 0, False)
+check('... a set step hit again goes off when let go (and is white while held)', (calls('setGridBit'), held_led), ([(0, 0, 0)], out.code(17, 3)))
+note(c, 2, 100); note(c, 2, 0, False); P.log.clear()
+note(c, 2, 100); enc(c, 5); note(c, 2, 0, False)
+check('hold a step and turn the encoder: its velocity +5 (100 -> 105), the graph editor opens on it, the step stays on when let go',
+      (calls('setStepParameterByIndex')[-1], calls('showGraphEditor'), calls('setGridBit'), P.ch[0]['grid'] >= {1}), ((0, 1, 1, 1, 105), [(1, 1, 0)], [], True))
+press(c, 'Events'); note(c, 2, 100); enc(c, 2)
+check('Events: the encoder edits the next step parameter (pitch: 60 -> 62, shown as D5)', (calls('setStepParameterByIndex')[-1], screen(c)[1:3]), ((0, 1, 1, 0, 62), ['STEP 2 PITCH', 'D5']))
+note(c, 2, 0, False)
+check('Events outside Step mode goes on to FL (Link to controller can learn it)', (press(fresh(), 'Events')), (False, False))
+exm_settings.STEP_VELOCITY = False
+c = fresh(); press(c, 'Step'); P.log.clear(); note(c, 3, 127); note(c, 3, 0, False)
+check('setting STEP_VELOCITY off: the step is set with FL\'s default velocity (no step parameter written)', (calls('setGridBit'), calls('setStepParameterByIndex')), ([(0, 2, 1)], []))
+exm_settings.STEP_VELOCITY = True
+
+c = fresh(); P.log.clear()
+check('the device reports Shift (CC 111): handled, a help line on the screen while it is held', (shift(c, True), screen(c)[1]), (True, 'SHIFT PADS'))
+check('Shift + pad 1 = UNDO (printed on the pad): undo, the note goes nowhere, nor does its release', (note(c, 1, 100), calls('undoUp'), note(c, 1, 0, False)), (True, [()], True))
+note(c, 2, 100); note(c, 5, 100); note(c, 6, 100); note(c, 11, 100)
+check('... pad 2 REDO, pad 5 QUANTIZE, pad 6 QUANTIZE 50% (the note starts), pad 11 COPY', (calls('undoDown'), calls('quickQuantize'), calls('globalTransport')[-1]), ([()], [(0, 0), (0, 1)], (51, 1)))
+for n in (2, 5, 6, 11): note(c, n, 0, False)
+shift(c, False)
+check('Shift up: the help line goes; a pad plays again (in play mode it goes to FL)', (screen(c)[1] != 'SHIFT PADS', note(c, 1, 100)), (True, False))
+c = fresh(); press(c, 'Shift+Rec'); a = screen(c)[1:3]; press(c, 'Shift+Restart'); b = screen(c)[1:3]
+check('Shift + Rec = count-in (printed "Count-in"), Shift + Restart = loop recording (printed "Loop"), both shown', (a, b), (['COUNT-IN', 'ON'], ['LOOP RECORD', 'ON']))
+P.ch[1]['mute'] = True; P.ch[2]['solo'] = True; press(c, 'Shift+Solo')
+check('Shift + Solo: every channel mute and solo off', ([x['mute'] for x in P.ch], [x['solo'] for x in P.ch]), ([False] * 4, [False] * 4))
+press(c, 'Group'); press(c, 'Mute'); press(c, 'Solo')
+check('in the Mixer (Group mode): Mute / Solo mute and solo the selected insert', (calls('muteTrack'), calls('soloTrack')), ([(1, -1)], [(1, -1)]))
+
+c = fresh(); press(c, 'Volume')
+lit = [c.leds[tb.STRIP_LED0 + k] for k in range(tb.STRIP_LEDS)]
+check('the strip shows the encoder target as a bar (channel volume 78 %: 20 of 25 LEDs, green)', (sum(1 for v in lit if v), set(v for v in lit if v)), (20, {out.code(7, 2)}))
+press(c, 'Volume'); press(c, 'Sampling'); P.ch[0]['pan'] = -0.5; c.dirty = True; c.idle()
+lit = [c.leds[tb.STRIP_LED0 + k] for k in range(tb.STRIP_LEDS)]
+check('... pan from the centre (50 % left: LEDs 6 to 12)', [k for k in range(25) if lit[k]], list(range(6, 13)))
+c = fresh(); press(c, 'Step')
+check('the arrows are dark where they cannot go (a one-page pattern: both)', (c.leds[tb.BUTTON_LED['Left']], c.leds[tb.BUTTON_LED['Right']]), (0, 0))
+press(c, 'Step')
+check('... selecting channels: Left dark on the first channel, Right lit', (c.leds[tb.BUTTON_LED['Left']], c.leds[tb.BUTTON_LED['Right']]), (0, 0x7C))
+P.log.clear(); press(c, 'Step')
+check('Step brings the Channel Rack to the front; the message also goes to FL\'s hint bar', (calls('showWindow'), calls('setFocused'), P.hint), ([(midi.widChannelRack,)], [(midi.widChannelRack,)], 'STEP: HOLD STEP + ENCODER'))
+P.log.clear(); press(c, 'Group'); check('Group brings the Mixer', calls('showWindow'), [(midi.widMixer,)])
+exm_settings.FOCUS_WINDOWS = False; P.log.clear(); press(c, 'Select'); check('... unless FOCUS_WINDOWS is off', calls('showWindow'), []); exm_settings.FOCUS_WINDOWS = True
+
+import device_ExMachina as dev
+flsim.P = P = flsim.Project(); dev.ctl = exm_core.Controller(); dev.ctl.init(); dev.ctl.on_sysex(Event(0xF0, sysex=MODE_FL)); dev.ctl.on_sysex(Event(0xF0, sysex=bytes([0xF0, 0x7D, 0x4D, 0x4B, 0x60, 0, 1, 0xF7]))); dev.ctl.idle()
+dev.ctl.turn = lambda d: 1 / 0; P.out.clear()
+import io, contextlib
+with contextlib.redirect_stderr(io.StringIO()) as err: dev.OnMidiMsg(Event(0xB0 | tb.CHANNEL, tb.ENC_CC, 1))
+texts = [b[7:-1].decode().rstrip() for b in sysexes() if b[4] == tb.CMD_TEXT]
+check('an error in a callback: the script stands down, the device keeps only its screen (HOST 1: the pads are its own again) and says so; the traceback is printed',
+      (dev.ctl.broken, hosts(), texts[:1], 'ZeroDivisionError' in err.getvalue()), (True, [tb.HOST_SCREEN], ['SCRIPT ERROR'], True))
+e = Event(0x90 | tb.CHANNEL, tb.PAD_NOTE[1], 100); dev.OnMidiMsg(e)
+P.out.clear(); dev.OnDeInit()
+check('... from then on FL gets the controller\'s MIDI as plain MIDI; closing FL still ends host mode (HOST 0)', (e.handled, hosts()), (False, [0]))
+exm_settings.LOOP_RECORD_ON_CONNECT = True; flsim.P = P = flsim.Project(); exm_core.Controller().init()
+check('setting LOOP_RECORD_ON_CONNECT: loop recording switched on when the script starts (once, only if it is off)', calls('globalTransport'), [(113, 1)]); exm_settings.LOOP_RECORD_ON_CONNECT = False
 
 # ---- colours ------------------------------------------------------------------------------------------------------------------------------------------
 check('colours: red, green, blue, yellow, grey, black', [out.nearest(x) for x in (0xFF0000, 0x00FF00, 0x0000FF, 0xFFFF00, 0x808080, 0)], [1, 7, 11, 5, 17, 17])
@@ -162,16 +254,18 @@ if len(sys.argv) > 2:
     import devsim, dispsim
     import mmk3_config as mc
     fw = open(sys.argv[1], 'rb').read(); data = open(sys.argv[2], 'rb').read()
-    FLCFG = next(p['cfg'] for p in mc.builtin_presets() if p['id'] == 'fl-studio')
     B = {n: i for i, n in enumerate(mc.BUTTON_NAMES)}; PADIDX = {n: mc.PAD_LABEL.index(n) for n in range(1, 17)}
 
     class Link:
         """The script and the emulated device, connected both ways."""
-        def __init__(self, answer=True):
-            self.d = devsim.Dev(fw, data, FLCFG); self.d.translate(devsim.report1()); self.d.start()
+        def __init__(self, answer=True, fl=True):
+            self.d = devsim.Dev(fw, data); self.d.translate(devsim.report1()); self.d.start()      # (the device starts in Standalone mode)
             self.sc = dispsim.Screen(self.d); self.sc.settle(); self.answer = answer
             flsim.P = flsim.Project(); global P; P = flsim.P
             self.c = exm_core.Controller(); self.c.init(); self.pump()
+            if fl: self.shift_project()
+        def shift_project(self):                    # the mode switch on the device: Shift down, + Project, both up
+            for pressed in (['Shift'], ['Shift', 'Project'], ['Shift'], []): self.device(self.d.translate(devsim.report1([B[n] for n in pressed])))
         def pump(self, n=6):
             for _ in range(n):
                 items, P.out[:] = list(P.out), []
@@ -180,12 +274,17 @@ if len(sys.argv) > 2:
                     if k == 'msg': pk += bytes([(m & 0xFF) >> 4, m & 0xFF, (m >> 8) & 0x7F, (m >> 16) & 0x7F])
                     else:
                         if pk: self.flush(pk); pk = b''
-                        if not self.answer and m[4] == tb.CMD_HOST: continue          # (an older firmware: HOST means nothing to it)
+                        if not self.answer and m[4] in (tb.CMD_HOST, tb.CMD_MODE): continue      # (an older firmware: HOST and MODE mean nothing to it)
                         self.d.all_sent.clear(); self.d.send_sysex(m)
                         for _ in range(8): self.d.tick(0)
                         for r in devsim.sysex_messages(self.d.all_sent):
                             if self.answer: self.c.on_sysex(Event(0xF0, sysex=r))
                 if pk: self.flush(pk)
+                self.d.all_sent.clear()
+                for _ in range(4): self.d.tick(0)
+                for r in devsim.sysex_messages(self.d.all_sent):           # what the device says unasked (the announcement of a mode switch)
+                    if self.answer: self.c.on_sysex(Event(0xF0, sysex=r))
+                self.d.drain()
                 advance(0.02); self.c.idle(); self.sc.run(4, 10)
         def flush(self, pk):
             for o in range(0, len(pk), 64): self.d.rx(pk[o:o + 64])
@@ -198,6 +297,13 @@ if len(sys.argv) > 2:
         def leds_match(self):
             got = self.d.led(); return [(l, got[l], v) for l, v in self.c.leds.items() if got[l] != v]
 
+    x = Link(fl=False); x.pump(4)
+    check('device in Standalone mode: the script asked, stays passive (no host mode), the device keeps its own idle screen', (x.c.active, x.c.host_ok), (False, None))
+    x.sc.settle(); check('... the screen is the device\'s (EX-MACHINA)', x.sc.fb() == dispsim.idle('DRUMS CH1 120'), True)
+    x.shift_project(); x.pump(4)
+    check('device: Shift + Project -> FL Studio mode; the device announces it and the script takes over (host mode, TEXT)', (x.d.cfg() == mc.fl_cfg(), x.c.active, x.c.host_ok), (True, True, True))
+    x.shift_project(); x.pump(4); x.sc.settle()
+    check('device: Shift + Project again -> Standalone; the script lets go, the device\'s own screen is back', (x.c.active, x.sc.fb() == dispsim.idle('DRUMS CH1 120')), (False, True))
     x = Link()
     check('device: the firmware answers HOST, the script uses TEXT', x.c.host_ok, True)
     x.sc.settle()
@@ -218,7 +324,11 @@ if len(sys.argv) > 2:
     x.press('Volume'); x.device(x.d.translate(devsim.report1(enc=3))); x.sc.settle()
     check('device: Volume + 3 encoder steps -> +3 %, the screen says so', (round(P.ch[0]['vol'], 2), out.clean(x.c.lines[2]).rstrip(), x.sc.fb() == out.frame(x.c.lines)), (0.81, '81%', True))
 
-    x = Link(answer=False); advance(1.1); x.pump(8); x.sc.settle(); x.pump(4)
+    x = Link(); x.device(x.d.translate(devsim.report1([B['Shift']])))
+    check('device: holding Shift on the device shows the script\'s help line (the firmware reports Shift)', out.clean(x.c.lines[1]).rstrip(), 'SHIFT PADS')
+    pk = x.d.translate(devsim.report2([(PADIDX[5], 1, 3000)])); x.device(pk); x.device(x.d.translate(devsim.report2([(PADIDX[5], 3, 0)]))); x.device(x.d.translate(devsim.report1()))
+    check('device: Shift + pad 5 on the device -> FL quick-quantizes the selected channel', calls('quickQuantize')[-1:], [(0, 0)])
+    x = Link(answer=False, fl=False); advance(1.1); x.pump(2); advance(1.1); x.pump(8); x.sc.settle(); x.pump(4)   # (no answer to MODE, then none to HOST)
     check('device, no answer to HOST: the pixel regions draw the same picture', (x.c.host_ok, x.sc.fb() == out.frame(x.c.lines)), (False, True))
     check('device, no answer: the LEDs as well', x.leds_match(), [])
 
