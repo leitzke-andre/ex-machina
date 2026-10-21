@@ -3,7 +3,9 @@
 // webUsbTransport() is the real one. What is specific to a device is the profile MIKRO_MK3 (USB ids, the flash area an image may occupy).
 
 
-export const MIKRO_MK3 = { name: 'Maschine Mikro MK3', vid: 0x17cc, pidRuntime: 0x1700, pidDfu: 0x1702, appBase: 0x08003000, appLimit: 0x0801f000 };   // NI's settings pages start at 0x0801f000
+// The application area ends where data lives that an image must not overwrite: NI's settings pages from 0x0801f000, and below them, from
+// 0x0801d800, the preset slots, patterns and saved mapping of the Ex-Machina firmware (NI's own image is 40 KB, far below either).
+export const MIKRO_MK3 = { name: 'Maschine Mikro MK3', vid: 0x17cc, pidRuntime: 0x1700, pidDfu: 0x1702, appBase: 0x08003000, appLimit: 0x0801d800 };
 export const VID = MIKRO_MK3.vid, PID_RUNTIME = MIKRO_MK3.pidRuntime, PID_DFU = MIKRO_MK3.pidDfu, APP_BASE = MIKRO_MK3.appBase, APP_LIMIT = MIKRO_MK3.appLimit;
 export const REQ = { DETACH: 0, DNLOAD: 1, GETSTATUS: 3, CLRSTATUS: 4, GETSTATE: 5, ABORT: 6 };
 export const S = { APP_IDLE: 0, APP_DETACH: 1, IDLE: 2, DNLOAD_SYNC: 3, DNBUSY: 4, DNLOAD_IDLE: 5, MANIFEST_SYNC: 6, MANIFEST: 7, MANIFEST_WAIT_RESET: 8, UPLOAD_IDLE: 9, ERROR: 10 };
@@ -23,8 +25,23 @@ export function validateImage(img, profile = MIKRO_MK3) {
     if (!(sp >= 0x20000000 && sp <= 0x20005000 && sp % 4 === 0)) problems.push(`initial stack pointer ${sp.toString(16)} is not in RAM`);
     if (!((reset & 1) && reset >= APP_BASE && reset < APP_BASE + img.length)) problems.push(`reset vector ${reset.toString(16)} is not Thumb code inside the image`);
   }
+  if (img.length >= 0x200 && !deviceDescriptors(img, profile).length) problems.push(`no USB device descriptor for ${profile.vid.toString(16)}:${profile.pidRuntime.toString(16)} in the image: not a firmware for this device`);
   return problems;
 }
+
+/** The bcdDevice values of the USB device descriptors in an image that name the profile's VID:PID (18 bytes: 12 01 ... idVendor idProduct bcdDevice). */
+export function deviceDescriptors(img, profile = MIKRO_MK3) {
+  const out = [];
+  for (let i = 0; i + 18 <= img.length; i++) {
+    if (img[i] !== 0x12 || img[i + 1] !== 0x01) continue;
+    const vid = img[i + 8] | (img[i + 9] << 8), pid = img[i + 10] | (img[i + 11] << 8);
+    if (vid === profile.vid && pid === profile.pidRuntime) out.push(img[i + 12] | (img[i + 13] << 8));
+  }
+  return out;
+}
+
+/** An error that means the device went away (it reset itself), as opposed to one it answered with (a STALL, a short reply). */
+export const deviceGone = (e) => !(e instanceof DfuError) && ['NetworkError', 'NotFoundError', 'AbortError', 'InvalidStateError'].includes(e?.name);
 
 /** DFU 1.1 functional descriptor (9 bytes: length, 0x21, attributes, detach timeout, transfer size, version) -> object or null. */
 export function parseDfuFunctional(b) {
@@ -65,19 +82,23 @@ export async function download(t, img, { block = 64, progress = () => {}, sleep 
   let n = 0;
   for (let off = 0; off < img.length; off += block) {
     await t.ctrlOut(REQ.DNLOAD, n++, img.slice(off, off + block));
-    for (;;) {
+    for (let waited = 0; ;) {
       const s = await getStatus(t);
       if (s.status !== 0) throw new DfuError(`device reported status ${s.status.toString(16)} after block ${n - 1} (state ${s.state})`);
-      if (s.state === S.DNBUSY) { await sleep(Math.min(s.poll, 1000)); continue; }
+      if (s.state === S.DNBUSY) {
+        if (waited > 10000) throw new DfuError(`the device stayed busy for 10 s after block ${n - 1}`);
+        const p = Math.max(1, Math.min(s.poll, 1000)); await sleep(p); waited += p; continue;
+      }
       if (s.state === S.DNLOAD_IDLE) break;
       throw new DfuError(`unexpected state ${s.state} after block ${n - 1}`);
     }
     progress(Math.min(off + block, img.length), img.length);
   }
-  await t.ctrlOut(REQ.DNLOAD, n, new Uint8Array(0));                 // zero length: end of data
+  try { await t.ctrlOut(REQ.DNLOAD, n, new Uint8Array(0)); }        // zero length: end of data
+  catch (e) { if (deviceGone(e)) return 'reset'; throw e; }           // (the chip may reset before this request's status stage)
   for (let i = 0; i < 100; i++) {
     let s;
-    try { s = await getStatus(t); } catch (e) { return 'reset'; }     // the chip reset itself: the normal ending
+    try { s = await getStatus(t); } catch (e) { if (deviceGone(e)) return 'reset'; throw e; }   // the chip reset itself: the normal ending (a STALL is not)
     if (s.status !== 0) throw new DfuError(`device rejected the image: status ${s.status.toString(16)} (state ${s.state})`);
     if ([S.APP_IDLE, S.IDLE, S.MANIFEST_WAIT_RESET].includes(s.state)) return s.state;
     if (s.state === S.MANIFEST_SYNC || s.state === S.MANIFEST) { await sleep(Math.min(Math.max(s.poll, 10), 1000)); continue; }

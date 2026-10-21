@@ -27,12 +27,18 @@ DFU version (`0x0110`): the first version of the client mixed them up and tried 
   `0x08000000`-`0x08002FFF`, was ever written; the application starts at `0x08003000` (initial stack pointer at offset 0, reset vector at offset 4).
 - The image length is not sent anywhere; the updater passes the stock image's length (`0x9dc8`). The client sends what the file has.
 - Above the application the chip's flash holds NI's settings pages (`0x0801F000`, `0x0801F800`) and the handshake page (`0x0801FC00`); the
-  application area of the profile ends at `0x0801F000`.
+  Ex-Machina firmware keeps its own data (preset slots, patterns, the saved mapping) from `0x0801D800`, so the application area of the profile ends there.
+- The bootloader erases only the pages an image covers: the pages above it (both firmwares' saved settings) survive a flash.
+- The end of a download: the chip resets as soon as the image is programmed, so the zero-length DNLOAD or the GETSTATUS after it fails with the device
+  gone (an I/O error, or "no such device"). Only that counts as the normal ending; a STALL there means the device is still present and refused.
 - NI's updater offers an update only for a device that reports `bcdDevice` below `0x0052`; a device found in DFU mode is flashed without that check.
 
 ## Practical notes
 - A program that has the device open (a browser tab with WebUSB access, NI's software) can grab the bootloader's USB device in the middle of a flash.
-  `flash_guarded.sh` checks the I/O registry (macOS) and refuses; CoreMIDI's `MIDIServer` always holds a class-compliant MIDI device and is ignored.
+  `flash_guarded.sh` checks the I/O registry (macOS, `usb_guard.py`) and refuses; CoreMIDI's `MIDIServer` always holds a class-compliant MIDI device and is
+  ignored. The device is found by its ids, in normal mode or in the bootloader, and a device that cannot be found is refused too (fail closed).
+  Any user client counts, so a browser that merely has the device open (Chrome after a page was given access) blocks it; telling an open device from a
+  claimed DFU interface would need checking on the hardware where each shows up in the registry.
 - `pyusb` needs libusb: on macOS `brew install libusb` and `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`. macOS refuses control requests to the
   HID interface ("Access denied"); the DFU interface is free.
 - In the browser, WebUSB hides class-specific descriptors, so the configuration descriptor is read with a standard `GET_DESCRIPTOR` control transfer.

@@ -109,7 +109,7 @@ d = Dev(cfg(chord_type=6)); tap(d, 'Chords')
 check('maj 9 on the chromatic scale (the major scale\'s notes): pad 2 (D) = D F# A C# E', [p[2] for p in hit(d, 2)], [62, 66, 69, 73, 76]); lift(d, 2)
 d = Dev(cfg(chord_type=7, keys_root=120)); tap(d, 'Chords')
 check('maj 11 near the top: notes past 127 are held at 127 (root 120: 120 124 127 127 127 127)', [p[2] for p in hit(d, 1)], [120, 124, 127, 127, 127, 127])
-check('... and every one of them is released', len(lift(d, 1)), 6)
+check('... and released once each: 120, 124 and the 127 that four chord notes share (the last of them lets it go)', [p[2] for p in lift(d, 1)], [120, 124, 127])
 d = Dev(); tap(d, 'Chords'); wrong = []
 types = []
 for k in range(9):
@@ -118,19 +118,33 @@ check('Shift + Chords steps the chord type: seventh, sus2, sus4, power, minor, m
       [[60, 64, 67, 71], [60, 62, 67], [60, 65, 67], [60, 67], [60, 63, 67], [60, 64, 67, 71, 74], [60, 64, 67, 71, 74, 77], [60, 64, 67], [60, 64, 67, 71]])
 shift_tap(d, 'Select'); shift_tap(d, 'Select')
 check('Shift + Select steps back (seventh -> triad -> maj 11)', [p[2] for p in hit(d, 1)], [60, 64, 67, 71, 74, 77]); lift(d, 1)
-d = Dev(cfg(chord_type=1)); tap(d, 'Chords')
+class NoteModel:                                                       # the note counting: a Note On always goes out, a Note Off only when no other pad holds the note
+    def __init__(self): self.cnt, self.held, self.out = {}, {}, []
+    def on(self, n): self.cnt[n] = self.cnt.get(n, 0) + 1; self.out.append((9, n))
+    def off(self, n):
+        if self.cnt.get(n, 0) > 1: self.cnt[n] -= 1
+        else: self.cnt[n] = 0; self.out.append((8, n))
+    def hit(self, idx, ct):
+        for n in self.held.get(idx, []): self.off(n)
+        self.held[idx] = chord_notes(0, ct, mc.PAD_LABEL[idx])
+        for n in self.held[idx]: self.on(n)
+    def lift(self, idx):
+        for n in self.held.pop(idx, []): self.off(n)
 ev21 = [(p, 1, 3000) for p in range(16)] + [(p, 1, 3000) for p in range(5)]
-out = d.translate(report2(ev21))
-sent = [pk for b in d.sent for pk in [tuple(b[k:k + 4]) for k in range(0, len(b), 4)]]
-check('a report of 21 chord hits (16 new pads + 5 retriggers, seventh chords): 16 x 4 Note On + 5 x (4 Note Off + 4 Note On) = 104 packets, all delivered in order',
-      (len(sent), len(d.sent) >= 1, sum(1 for pk in sent if pk[0] == 8), sum(1 for pk in sent if pk[0] == 9)), (104, True, 20, 84))
-check('... every held pad remembers its chord: lifting all of them sends 16 x 4 Note Offs', sum(len(lift(d, n)) for n in range(1, 17)), 64)
-d = Dev(cfg(chord_type=7)); tap(d, 'Chords')
-out = d.translate(report2(ev21))
-sent = [pk for b in d.sent for pk in [tuple(b[k:k + 4]) for k in range(0, len(b), 4)]]
-check('the worst case, 21 maj 11 hits in one report (16 new pads + 5 retriggers): 16 x 6 Note On + 5 x (6 Note Off + 6 Note On) = 156 packets, all delivered',
-      (len(sent), sum(1 for pk in sent if pk[0] == 8), sum(1 for pk in sent if pk[0] == 9)), (156, 30, 126))
-check('... and lifting all 16 pads sends 16 x 6 Note Offs', sum(len(lift(d, n)) for n in range(1, 17)), 96)
+for ct, what in ((1, 'seventh chords, 4 notes'), (7, 'maj 11, 6 notes: the worst case for the output buffer')):
+    d = Dev(cfg(chord_type=ct)); tap(d, 'Chords'); m = NoteModel()
+    for p, _, _ in ev21: m.hit(p, ct)
+    out = d.translate(report2(ev21))
+    sent = [(pk[0], pk[2]) for b in d.sent for pk in [tuple(b[k:k + 4]) for k in range(0, len(b), 4)]]
+    check(f'a report of 21 chord hits ({what}; 16 new pads + 5 retriggers): every Note On and exactly the Note Offs of the counting model, in order ({len(m.out)} packets)', sent, m.out)
+    m.out = []
+    for n in range(1, 17): m.lift(PADIDX[n])
+    offs = [p for n in range(1, 17) for p in lift(d, n)]
+    check(f'... lifting all 16 pads releases every note exactly once, when its last pad lets go ({len(m.out)} Note Offs; overlapping chords share notes)', [(p[0], p[2]) for p in offs], m.out)
+d = Dev(cfg(chord_type=0)); tap(d, 'Chords')
+hit(d, 1); hit(d, 3)
+check('two chord pads sharing notes (C E G and E G B): releasing pad 1 releases only C; E and G sound on for pad 3', [p[2] for p in lift(d, 1)], [60])
+check('... and releasing pad 3 then releases E, G and B', [p[2] for p in lift(d, 3)], [64, 67, 71])
 d = Dev(); tap(d, 'Chords'); hit(d, 1)
 check('pressure on a chord pad goes to its root note (poly aftertouch)', d.translate(report2([(PADIDX[1], 4, 2000)])), [(0x0A, 0xA0, 60, 62)])
 lift(d, 1)

@@ -739,8 +739,10 @@ static void __attribute__((noinline)) own_normal(void)
     if (STK[0x8A]) w_btn_report();
     if (STK[0xC3]) w_strip_report();
     if (STK[0xBC]) w_led_refresh();
+#ifndef NATIVE                                       /* (nothing sets these in the standalone image: they belong to NI's host protocol) */
     if (U16(0x2CA)) ((void (*)(void))STOCK(0x08006625))();                /* display contrast fade (still NI's) */
     if (U16(0x7EA) == 1) ((void (*)(void))STOCK(0x080047D5))();           /* settings save (still NI's) */
+#endif
     if (USB_SUSP) {
         SUSP_COUNT = (u16)(SUSP_COUNT + 1);
         if (SUSP_COUNT > 0xFFF0) {

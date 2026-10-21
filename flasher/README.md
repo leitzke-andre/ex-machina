@@ -5,7 +5,8 @@ A small USB DFU 1.1 client for the **Native Instruments Maschine Mikro MK3** boo
 | File | What |
 |---|---|
 | `dfu_client.py` | command-line client (Python, `pyusb`); dry run unless `--yes-flash` |
-| `flash_guarded.sh` | macOS wrapper: refuses to write while any program other than the OS has the device open, then runs the client |
+| `flash_guarded.sh` | macOS wrapper: finds the device by its ids (`usb_guard.py`), refuses to write while any program other than the OS has it open or when it cannot be found, then runs the client |
+| `usb_guard.py` | the check itself: which programs hold a USB device, found by VID:PID in the I/O Registry (standard library only; `test_usb_guard.py`) |
 | `dfu.js` | the same protocol as an ES module for the browser (WebUSB): `download`, `validateImage`, `findDfuInterface`, `webUsbTransport`, ... |
 | `test_dfu_client.py`, `test_dfu.mjs` | tests against a mock DFU device (no hardware and no firmware image needed) |
 | `PROTOCOL.md` | what the bootloader does, as observed on a real unit |
@@ -27,8 +28,10 @@ python3 flasher/dfu_client.py flash image.bin --yes-flash
 flasher/flash_guarded.sh image.bin [python]            # the same, after checking that nothing else has the device open (macOS)
 ```
 `dfu_client.py` takes `--vid --pid --dfu-pid --app-base --app-limit` for another device; the defaults are the profile `MIKRO_MK3`
-(`17cc:1700` in normal mode, `17cc:1702` in the bootloader, application area `0x08003000`-`0x0801F000`). `flash_guarded.sh` reads `DFU_DEVICE_NAME`
-(default `Maschine Mikro MK3`) and `DFU_CLIENT_ARGS`. In the browser, `dfu.js` is used the way `tools/ui/app.js` uses it:
+(`17cc:1700` in normal mode, `17cc:1702` in the bootloader, application area `0x08003000`-`0x0801D800`: NI's settings pages start at
+`0x0801F000`, and the Ex-Machina firmware keeps its presets and saved mapping from `0x0801D800`). An image must also hold a USB device descriptor
+for the profile's VID:PID, and after a flash the device must come back in normal mode with the `bcdDevice` that descriptor names.
+`flash_guarded.sh` reads `DFU_GUARD_ARGS` (`--vid` / `--pid` for the check) and `DFU_CLIENT_ARGS`. In the browser, `dfu.js` is used the way `tools/ui/app.js` uses it:
 `findDfuInterface(await readConfigDescriptor(device))`, `webUsbTransport(device, interfaceNumber)`, `download(transport, image, { block, progress })`.
 The protocol functions work with any transport that has `ctrl_out` / `ctrl_in` (Python) or `ctrlOut` / `ctrlIn` (JS), which is how the tests run them.
 

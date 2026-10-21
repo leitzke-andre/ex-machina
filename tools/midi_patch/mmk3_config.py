@@ -176,6 +176,9 @@ def check(cfg):
     order += [('scale', 0), ('chord_type', 0)] + [('enc_tgt_cc', i) for i in range(3)] + [('arp_type', 0), ('arp_rate', 0), ('arp_oct', 0), ('enc_pages', 0), ('enc_page_step', 0), ('enc_accel', 0)]
     for name, i in order:
         if bad(name, i): return FIELDS[name][0] + i
+        if name in ('btn_act', 'btn_act2') and cfg[FIELDS[name][0] + i] in (ACT_NOTE, ACT_MMC):    # a note / MMC button needs its number (0xFF would go out as a status byte)
+            p = 'btn_cc' if name == 'btn_act' else 'btn_cc2'
+            if cfg[FIELDS[p][0] + i] > 127: return FIELDS[p][0] + i
     return None
 
 
@@ -249,7 +252,7 @@ def slots_request(): return message(CMD_SLOTS)
 CMD_CAPTURE, CMD_HANG = 0x1D, 0x1F                    # diagnostics (docs/clean-firmware-plan.md): raw pad capture, the watchdog test
 CAP_BASE, CAP_END = 0x20001C20, 0x200041F0            # where the capture lands in the device's RAM (header of 16 bytes, then the frames)
 def capture_request(mask, period_ms=1): return message(CMD_CAPTURE, bytes([mask & 0x7F, (mask >> 7) & 0x7F, (mask >> 14) & 3, period_ms & 0x7F]))
-def hang_request(): return message(CMD_HANG, b'HANG')
+def hang_request(): return message(CMD_HANG, b'HANG')     # send it with Device.hang(): once, never retried
 CMD_HAL = 0x1C                                         # which of our own drivers (hal.c) replace the stock ones: bit 0 LED refresh, bit 1 display sender, bit 2 button scan, bit 3 strip read, bit 4 pads, bit 5 reports and dispatcher, bit 6 LED colours; a second byte 1 = run our LED chip start-up once
 HAL_LED, HAL_DISP, HAL_BTN, HAL_STRIP, HAL_PADS, HAL_REPORTS, HAL_COLOUR = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40
 HAL_ALL = 0x7F
@@ -503,6 +506,11 @@ class Device:
     def slot_names(self): return self.request(slots_request(), CMD_SLOTS)['names']
     def slot_store(self, n, name=None): return self.request(slot_store_request(n, name), CMD_SLOT_STORE)
     def slot_load(self, n): return self.request(slot_load_request(n), CMD_SLOT_LOAD)
+
+    def hang(self):
+        """The watchdog test: the device confirms, then stops until its watchdog resets it. Sent once and never retried: a retry would reach the
+        restarted device and hang it again, and three watchdog resets in a row put it into DFU mode."""
+        return self.request(hang_request(), CMD_HANG, retries=0)
 
     def peek(self, addr, length):
         """Bytes from the device's memory (any length: asked for in pieces of 64). Raises ProtocolError if the firmware refuses a range."""

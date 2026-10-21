@@ -18,7 +18,9 @@ import argparse, collections, struct, sys, time
 
 # What is specific to a device: its USB ids (normal mode / DFU mode) and the flash area an application image may occupy.
 Profile = collections.namedtuple('Profile', 'name vid pid_runtime pid_dfu app_base app_limit')
-MIKRO_MK3 = Profile('Maschine Mikro MK3', 0x17CC, 0x1700, 0x1702, 0x08003000, 0x0801F000)   # the NI settings pages start at 0x0801F000
+# The application area ends where data lives that an image must not overwrite: NI's settings pages from 0x0801F000, and below them, from
+# 0x0801D800, the preset slots, patterns and saved mapping of the Ex-Machina firmware (NI's own image is 40 KB, far below either).
+MIKRO_MK3 = Profile('Maschine Mikro MK3', 0x17CC, 0x1700, 0x1702, 0x08003000, 0x0801D800)
 VID, PID_RUNTIME, PID_DFU, APP_BASE, APP_LIMIT = MIKRO_MK3.vid, MIKRO_MK3.pid_runtime, MIKRO_MK3.pid_dfu, MIKRO_MK3.app_base, MIKRO_MK3.app_limit
 DFU_DETACH, DFU_DNLOAD, DFU_GETSTATUS, DFU_CLRSTATUS, DFU_GETSTATE, DFU_ABORT = 0, 1, 3, 4, 5, 6
 S_APP_IDLE, S_APP_DETACH, S_IDLE, S_DNLOAD_SYNC, S_DNBUSY, S_DNLOAD_IDLE, S_MANIFEST_SYNC, S_MANIFEST, S_MANIFEST_WAIT_RESET, S_UPLOAD_IDLE, S_ERROR = range(11)
@@ -38,7 +40,23 @@ def validate_image(img, profile=MIKRO_MK3):
         sp, reset = struct.unpack_from('<II', img, 0)
         if not (0x20000000 <= sp <= 0x20005000 and sp % 4 == 0): problems.append(f'initial stack pointer {sp:#x} is not in RAM')
         if not (reset & 1 and APP_BASE <= reset < APP_BASE + len(img)): problems.append(f'reset vector {reset:#x} is not Thumb code inside the image')
+    if len(img) >= 0x200 and not device_descriptors(img, profile):
+        problems.append(f'no USB device descriptor for {profile.vid:04x}:{profile.pid_runtime:04x} in the image: not a firmware for this device')
     return problems
+
+
+def device_descriptors(img, profile=MIKRO_MK3):
+    """The bcdDevice values of the USB device descriptors in an image that name the profile's VID:PID (18 bytes: 12 01 ... idVendor idProduct bcdDevice)."""
+    out = []
+    for i in range(len(img) - 17):
+        if img[i] == 0x12 and img[i + 1] == 0x01 and struct.unpack_from('<HH', img, i + 8) == (profile.vid, profile.pid_runtime):
+            out.append(struct.unpack_from('<H', img, i + 12)[0])
+    return out
+
+
+def device_gone(e):
+    """An error that means the device went away (it reset itself), as opposed to one it answered with (a STALL: errno 32)."""
+    return isinstance(e, OSError) and (getattr(e, 'errno', None) in (5, 19) or 'Input/Output' in str(e) or 'No such device' in str(e))
 
 
 class UsbTransport:
@@ -73,17 +91,24 @@ def download(t, img, block=64, progress=None, sleep=time.sleep):
     n = 0
     for off in range(0, len(img), block):
         t.ctrl_out(DFU_DNLOAD, n, img[off:off + block]); n += 1
+        waited = 0
         while True:
             status, poll, state = get_status(t)
             if status != 0: raise DfuError(f'device reported status {status:#x} after block {n - 1} (state {state})')
-            if state == S_DNBUSY: sleep(min(poll, 1000) / 1000.0); continue
+            if state == S_DNBUSY:
+                if waited > 10000: raise DfuError(f'the device stayed busy for 10 s after block {n - 1}')
+                p = max(1, min(poll, 1000)); sleep(p / 1000.0); waited += p; continue
             if state == S_DNLOAD_IDLE: break
             raise DfuError(f'unexpected state {state} after block {n - 1}')
         if progress: progress(min(off + block, len(img)), len(img))
-    t.ctrl_out(DFU_DNLOAD, n, b'')                                   # zero-length: end of data
+    try: t.ctrl_out(DFU_DNLOAD, n, b'')                              # zero-length: end of data
+    except OSError as e:
+        if device_gone(e): return 'reset'                             # (the chip may reset before this request's status stage)
+        raise
     for _ in range(100):
         try: status, poll, state = get_status(t)
-        except OSError:
+        except OSError as e:
+            if not device_gone(e): raise DfuError(f'the device refused the end of the download: {e}')     # a STALL: still there, and it says no
             # The Maschine's bootloader resets the chip as soon as the image is programmed, so the status poll after the last block
             # fails with an I/O error (seen on the real device, 2026-10-17). That is the normal ending: the caller must check that
             # the device comes back and what it reports.
@@ -170,12 +195,18 @@ def main(argv=None):
         print('\ndownload finished; leaving DFU mode')
         try: t.ctrl_out(DFU_DETACH, tmo)
         except Exception: pass
+    for _ in range(50):                                              # the bootloader's device is gone before anything that comes back counts
+        if usb.core.find(idVendor=VID, idProduct=PID_DFU) is None: break
+        time.sleep(0.2)
     back = wait_for_device(usb.core.find, (PID_RUNTIME, PID_DFU), timeout=20, vid=VID)
     if back is None:
         print('the device did not come back within 20 s: wait three minutes, replug it, then restore the original firmware with the vendor\'s updater or this tool'); return 5
     print(f'back as {back.idVendor:04x}:{back.idProduct:04x}, bcdDevice {back.bcdDevice:#06x}')
     if back.idProduct == PID_DFU:
         print(f'it is still in the bootloader ({VID:04x}:{PID_DFU:04x}): the image was not accepted or did not boot; flash the original firmware again'); return 4
+    want = set(device_descriptors(img, prof))
+    if len(want) == 1 and back.bcdDevice not in want:
+        print(f'it reports bcdDevice {back.bcdDevice:#06x}, the image says {want.pop():#06x}: is this the device that was flashed?'); return 6
     return 0
 
 

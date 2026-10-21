@@ -12,6 +12,11 @@ channel 1** by default (the channel is set on the setup page or with Group in *M
 | Encoder | Turn: CC 7, absolute 0-127 from 0 (relative modes available); push: CC 8; touch: CC 9 |
 | Touch strip | CC 1, 0-127 from left to right |
 
+**Notes held by more than one source** (two chord pads sharing a note, a pad and the sequencer on the same drum, 16 Velocities): every Note On
+goes out, and the Note Off only when the last of them lets go, so one release never cuts a note another pad still holds. When another mapping
+takes over (a slot, the setup page, an app) everything still sounding is released first, on the channel it was played on, and a bent pitch goes
+back to the centre.
+
 With *Maschine-like modes* and the controller's own functions, the controller also sends Program Change, pitch bend (strip *Pitch*), MIDI clock,
 Start and Stop (*Shift + Tap*), All Sound Off / All Notes Off (panic), and the notes of the arp, the chords, the strum and the sequencer.
 

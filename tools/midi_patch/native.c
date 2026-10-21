@@ -27,7 +27,18 @@ static void ram_start_values(void)
     RAM8(0x2000018E) = 0x2A; RAM8(0x2000018F) = 0x00; RAM8(0x2000019A) = 0x2B;          /* the strip read: write register 0 to 0x15, read from 0x15 */
 }
 
+static void __attribute__((noinline, noreturn, used)) native_main(void);
+
+/* The reset handler. The stack pointer is set here, not left to whoever jumped to us: NI's bootloader is expected to load it from the vector
+ * table, but its own stack (0x20000C90) sits just above the transmit ring, and a stack left there would grow into it. Nothing is on the stack
+ * yet that is needed later: native_main() never returns. */
 void native_reset(void)
+{
+    __asm volatile("msr msp, %0" :: "r"(0x20001C18u) : "memory");
+    native_main();
+}
+
+static void native_main(void)
 {
     u32 a;
     for (a = 0x20000000u; a < 0x20001818u; a += 4) RAM32(a) = 0;                         /* RAM: zero, apart from the stack (in use), our state */

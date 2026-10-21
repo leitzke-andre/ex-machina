@@ -47,6 +47,7 @@ class Dev:
         if cfg is not None: mu.mem_write(bp.CFG_ADDR, bytes(cfg))
         self.flash = FlashModel(mu, writable=[(bp.SLOT_BASE, bp.SAVE_PAGE + PAGE)]) if model else None
         self.sent, self.all_sent, self.out_ptr, self.stock_rx, self.watchdog, self.threshold_calls = [], [], None, 0, 0, 0
+        self.host_reads = True                                          # translate() drains the ring after each report (False: the ring fills up)
         def enqueue(uc, a, s, u):
             r0, r1 = uc.reg_read(UC_ARM_REG_R0), uc.reg_read(UC_ARM_REG_R1)
             self.out_ptr = r0; blob = bytes(uc.mem_read(r0, r1)); self.sent.append(blob); self.all_sent.append(blob)
@@ -99,6 +100,7 @@ class Dev:
         try: mu.emu_start(self.T_TRANS, 0x08000000, count=600000)
         except UcError:
             if mu.reg_read(UC_ARM_REG_PC) != 0x08000000: raise
+        if self.host_reads: self.drain()                                # a host that reads all the time: the ring is empty again before the next report
         return [tuple(b[k:k + 4]) for b in self.sent for k in range(0, len(b), 4)]
 
     def rx(self, pkt, sp=0x20004000):

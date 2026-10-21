@@ -5,9 +5,10 @@ import * as F from './dfu.js';
 let ok = true;
 const check = (name, cond, detail = '') => { ok &&= !!cond; console.log((cond ? 'PASS ' : 'FAIL ') + name + (cond ? '' : '  ' + detail)); };
 const hex = (u8) => Array.from(u8, (b) => b.toString(16).padStart(2, '0')).join('');
+const gone = () => Object.assign(new Error('The device was disconnected.'), { name: 'NetworkError' });   // what WebUSB throws when the device resets
 class MockDfu {
-  constructor({ busy = 0, failAt = null, startState = F.S.IDLE, verifyError = false, resetOnManifest = false, dropAt = null } = {}) {
-    Object.assign(this, { busy, failAt, verifyError, resetOnManifest, dropAt });
+  constructor({ busy = 0, failAt = null, startState = F.S.IDLE, verifyError = false, resetOnManifest = false, dropAt = null, stallOnManifest = false, busyForever = false, goneOnZlp = false } = {}) {
+    Object.assign(this, { busy, failAt, verifyError, resetOnManifest, dropAt, stallOnManifest, busyForever, goneOnZlp });
     this.state = startState; this.status = startState === F.S.ERROR ? 0x0e : 0; this.received = []; this.blocks = [];
   }
   async ctrlOut(request, value, data = new Uint8Array(0)) {
@@ -16,6 +17,7 @@ class MockDfu {
     else if (request === F.REQ.DNLOAD) {
       if (![F.S.IDLE, F.S.DNLOAD_IDLE].includes(this.state)) { this.status = 0x0e; this.state = F.S.ERROR; throw new Error('stall'); }
       this.blocks.push(value);
+      if (data.length === 0 && this.goneOnZlp) throw gone();
       if (data.length === 0) this.state = F.S.MANIFEST_SYNC;
       else {
         if (this.failAt !== null && this.blocks.length - 1 === this.failAt) { this.status = 3; this.state = F.S.ERROR; return; }
@@ -26,7 +28,10 @@ class MockDfu {
   async ctrlIn(request, length) {
     if (request !== F.REQ.GETSTATUS || length !== 6) throw new Error('unexpected request');
     const st = this.state;
-    if (st === F.S.MANIFEST_SYNC && this.resetOnManifest) throw new Error('device gone');
+    if (st === F.S.MANIFEST_SYNC && this.resetOnManifest) throw gone();
+    if (st === F.S.MANIFEST_SYNC && this.stallOnManifest) throw new F.DfuError('control request 3 failed: stall');
+    if (st === F.S.DNLOAD_SYNC && this.busyForever) { this.state = F.S.DNBUSY; return Uint8Array.from([0, 100, 0, 0, F.S.DNBUSY, 0]); }
+    if (st === F.S.DNBUSY && this.busyForever) return Uint8Array.from([0, 100, 0, 0, F.S.DNBUSY, 0]);
     if (st === F.S.DNLOAD_SYNC && this.dropAt !== null && this.blocks.length - 1 === this.dropAt) throw new Error('I/O error');
     if (st === F.S.DNLOAD_SYNC) this.state = this.busy ? F.S.DNBUSY : F.S.DNLOAD_IDLE;
     else if (st === F.S.DNBUSY) this.state = F.S.DNLOAD_IDLE;
@@ -36,7 +41,13 @@ class MockDfu {
     return Uint8Array.from([this.status, poll & 255, (poll >> 8) & 255, 0, this.state, 0]);
   }
 }
-const image = (n) => { const a = new Uint8Array(n); new DataView(a.buffer).setUint32(0, 0x20001c18, true); new DataView(a.buffer).setUint32(4, 0x080031c1, true); for (let i = 8; i < n; i++) a[i] = (i * 7) & 255; return a; };
+const DEVDESC = [0x12, 0x01, 0x00, 0x02, 0, 0, 0, 0x40, 0xcc, 0x17, 0x00, 0x17, 0x51, 0x00, 1, 2, 3, 1];   // 17cc:1700, bcdDevice 0x0051
+const image = (n, desc = true) => {
+  const a = new Uint8Array(n); new DataView(a.buffer).setUint32(0, 0x20001c18, true); new DataView(a.buffer).setUint32(4, 0x080031c1, true);
+  for (let i = 8; i < n; i++) a[i] = (i * 7) & 255;
+  if (desc && n >= 0x200) a.set(DEVDESC, 0x100);
+  return a;
+};
 const img = image(1000), nBlocks = Math.ceil(1000 / 64);
 let m = new MockDfu();
 let state = await F.download(m, img, { sleep: async () => {} });
@@ -57,6 +68,13 @@ m = new MockDfu({ resetOnManifest: true });
 check('DFU: a device that resets itself after the last block ends the download with "reset", image complete', (await F.download(m, img, { sleep: async () => {} })) === 'reset' && hex(Uint8Array.from(m.received)) === hex(img));
 let e2; try { await F.download(new MockDfu({ dropAt: 5 }), img, { sleep: async () => {} }); } catch (x) { e2 = x; }
 check('DFU: an I/O error in the middle of the transfer is still raised', e2 instanceof Error && e2.message === 'I/O error', String(e2));
+for (const [what, kw, want] of [['a STALL after the last block (the device is still there and refuses)', { stallOnManifest: true }, 'error'],
+                                ['the device going away during the zero-length block', { goneOnZlp: true }, 'reset']]) {
+  let r; try { r = await F.download(new MockDfu(kw), img, { sleep: async () => {} }); } catch (x) { r = x instanceof F.DfuError ? 'error' : String(x); }
+  check(`DFU: ${what}: ${want === 'reset' ? 'the normal ending ("reset")' : 'a DfuError, not success'}`, r === want, String(r));
+}
+let e4, slept = 0; try { await F.download(new MockDfu({ busyForever: true }), img, { sleep: async (ms) => { slept += ms; } }); } catch (x) { e4 = x; }
+check('DFU: a device that stays busy gives up after 10 s of polling (a DfuError, not an endless loop)', e4 instanceof F.DfuError && slept <= 11000, `${e4} after ${slept} ms`);
 let progress = []; await F.download(new MockDfu(), img, { sleep: async () => {}, progress: (d, n) => progress.push([d, n]) });
 check('DFU: progress reports every block and ends at the full size', progress.length === nBlocks && JSON.stringify(progress.at(-1)) === '[1000,1000]', JSON.stringify(progress.at(-1)));
 
@@ -64,6 +82,10 @@ check('validateImage rejects an SP outside RAM, a reset vector outside the image
   F.validateImage(Uint8Array.from([0, 16, 0, 0, 0xc1, 0x31, 0, 8, ...new Uint8Array(1000)])).some((p) => /stack pointer/.test(p))
   && F.validateImage(Uint8Array.from([0x18, 0x1c, 0, 0x20, 1, 0, 0, 0x10, ...new Uint8Array(1000)])).some((p) => /reset vector/.test(p))
   && F.validateImage(image(0x1d000)).some((p) => /larger/.test(p)));
+check('validateImage: the application area ends at 0x0801d800 (the Ex-Machina data pages below NI\'s settings): 0x1a800 bytes fit, one more does not',
+  F.validateImage(image(0x1a800)).length === 0 && F.validateImage(image(0x1a801)).some((p) => /larger/.test(p)));
+check('validateImage: an image without a device descriptor for 17cc:1700 is not a firmware for this device', F.validateImage(image(0x1000, false)).some((p) => /descriptor/.test(p)));
+check('deviceDescriptors: the bcdDevice of each 17cc:1700 descriptor in the image', JSON.stringify(F.deviceDescriptors(image(0x1000))) === '[81]');
 
 // descriptors: the DFU functional descriptor and the interface search, on the real configuration descriptors
 const STOCK_DFU_FUNC = Uint8Array.from([9, 0x21, 0x09, 0xff, 0x00, 0x40, 0x00, 0x10, 0x01]);

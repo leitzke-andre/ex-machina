@@ -585,8 +585,18 @@ async function openDfu(dev) {
 }
 
 async function selectUsb(productId) {
-  const filters = [{ vendorId: F.VID, ...(productId ? { productId } : {}) }];
-  return openDfu(await navigator.usb.requestDevice({ filters }));
+  const pids = productId ? [productId] : [F.PID_RUNTIME, F.PID_DFU];               // only the Mikro MK3, in normal mode or in its bootloader
+  const dev = await navigator.usb.requestDevice({ filters: pids.map((p) => ({ vendorId: F.VID, productId: p })) });
+  if (dev.vendorId !== F.VID || !pids.includes(dev.productId)) throw new Error(`that is not a Maschine Mikro MK3 (${dev.vendorId.toString(16)}:${dev.productId.toString(16)})`);
+  return openDfu(dev);
+}
+
+/** While a flash runs nothing else on the Firmware tab can start another one, and leaving the page asks first. */
+function setBusy(busy) {
+  fw.busy = busy;
+  for (const id of ['ack', 'file-fw', 'btn-usb', 'btn-flash']) { const n = $(id); if (n) n.disabled = busy || (id === 'btn-flash' && !(fw.usb && fw.image && $('ack').checked)); }
+  document.querySelectorAll('input[name=fwmode]').forEach((r) => { r.disabled = busy; });
+  window.onbeforeunload = busy ? (e) => { e.preventDefault(); return ''; } : null;
 }
 
 async function onUsbSelected() {
@@ -595,7 +605,7 @@ async function onUsbSelected() {
     const { dev, di } = fw.usb;
     $('usb-result').textContent = `${dev.productName || 'device'} (${di.runtime ? 'normal mode' : 'bootloader'}, DFU interface ${di.number}).`;
     setStep('st-usb', { done: true }); setStep('st-flash');
-    $('btn-flash').disabled = !$('ack').checked;
+    $('btn-flash').disabled = fw.busy || !$('ack').checked;
   } catch (e) { $('usb-result').textContent = `Problem: ${e.message}`; }
 }
 
@@ -603,25 +613,45 @@ async function download(dev, di) {
   const prog = $('prog'); prog.hidden = false; prog.value = 0;
   const t = F.webUsbTransport(dev, di.number);
   $('flash-result').textContent = 'Writing the firmware…';
+  fw.writing = true;
   const result = await F.download(t, fw.image, { block: di.functional?.transferSize || 64, progress: (d, n) => { prog.value = (d / n) * 100; } });
   try { await dev.close(); } catch { /* the device is already gone */ }
   $('flash-result').textContent = result === 'reset' ? 'Written. The device restarted by itself. Waiting for it to come back…' : 'Written. Waiting for the device to restart…';
   for (let i = 0; i < 60; i++) {
     await sleep(500);
-    const back = (await navigator.usb.getDevices()).find((d) => d.vendorId === F.VID && d.productId === F.PID_RUNTIME);
+    const devs = await navigator.usb.getDevices();
+    if (i >= 6 && devs.some((d) => d !== dev && d.vendorId === F.VID && d.productId === F.PID_DFU)) {     // back, but in the bootloader: not accepted or does not start
+      fw.writing = false; setBusy(false); $('btn-usb2').hidden = false;
+      $('flash-result').textContent = 'The device came back in its bootloader: the firmware was not accepted or does not start. It stays there, safely, until a firmware is written: click "Select the bootloader…" and flash again, or restore NI\'s original firmware.';
+      say('Flashing failed: the device is still in its bootloader.', true); return;
+    }
+    const back = devs.find((d) => d.vendorId === F.VID && d.productId === F.PID_RUNTIME);
     if (back) {
+      fw.writing = false; setBusy(false);
       const bcd = (back.deviceVersionMajor << 8) | (back.deviceVersionMinor << 4) | back.deviceVersionSubminor;
       const ver = `17cc:1700, version 0x${bcd.toString(16).padStart(4, '0')}`;
       $('flash-result').textContent = fw.mode === 'stock' ? `Done. The device is back (${ver}) and runs NI's original firmware again.` : `Done. The device is back (${ver}). It is a MIDI device now: press Connect to talk to it.`;
       say(fw.mode === 'stock' ? 'NI\'s original firmware restored.' : 'Firmware flashed.'); return;
     }
   }
+  fw.writing = false; setBusy(false);
   $('flash-result').textContent = 'The page cannot see the device again (the browser only shows devices you selected before the restart). Unplug and replug it: if it shows up as a MIDI device (press Connect) or as the plain NI device, the flash worked. If it stays silent, wait three minutes and replug once more; then restore the original firmware (tools/restore_stock.sh, or this page with the saved copy).';
   say('The device did not reappear in the page after flashing; replug it to check.', true);
 }
 
+/** What a failure means: before any block was written nothing changed; once writing started, the device stays in its bootloader until a
+ *  firmware is written completely (it does not start a half-written one). */
+function flashFailed(e) {
+  const midway = fw.writing; fw.writing = false; setBusy(false);
+  $('flash-result').textContent = midway
+    ? `Problem: ${e.message}. The firmware was only partly written: the device stays in its bootloader until a complete one is written. Click "Select the bootloader…" and flash again, or restore NI's original firmware (this page with the saved copy, or tools/restore_stock.sh).`
+    : `Problem: ${e.message}. Nothing was written: the device still runs its firmware. Unplug and replug it, then try again.`;
+  if (midway) $('btn-usb2').hidden = false;
+  say(`Flashing stopped: ${e.message}`, true);
+}
+
 async function flashNow() {
-  $('btn-flash').disabled = true;
+  setBusy(true);
   try {
     const { dev, di } = fw.usb;
     if (di.runtime) {
@@ -629,10 +659,10 @@ async function flashNow() {
       try { await F.webUsbTransport(dev, di.number).ctrlOut(F.REQ.DETACH, di.functional?.detachTimeout ?? 255); } catch { /* it resets itself */ }
       try { await dev.close(); } catch { /* gone */ }
       $('flash-result').textContent = 'The device is in its bootloader now. Click "Select the bootloader…" and choose it (the browser needs one more click).';
-      $('btn-usb2').hidden = false; return;
+      $('btn-usb2').hidden = false; return;                         // (still busy: the flash goes on with the bootloader)
     }
     await download(dev, di);
-  } catch (e) { $('flash-result').textContent = `Problem: ${e.message}. Nothing is lost: unplug and replug the device, or restore the original firmware with NI's updater.`; say(`Flashing stopped: ${e.message}`, true); }
+  } catch (e) { flashFailed(e); }
 }
 
 async function onBootloaderSelected() {
@@ -641,7 +671,10 @@ async function onBootloaderSelected() {
     fw.usb = await selectUsb(F.PID_DFU);
     if (fw.usb.di.runtime) throw new Error('that is not the bootloader');
     await download(fw.usb.dev, fw.usb.di);
-  } catch (e) { $('flash-result').textContent = `Problem: ${e.message}`; $('btn-usb2').hidden = false; say(`Flashing stopped: ${e.message}`, true); }
+  } catch (e) {
+    if (fw.writing) flashFailed(e);
+    else { $('flash-result').textContent = `Problem: ${e.message}. The device waits in its bootloader: click "Select the bootloader…" again.`; $('btn-usb2').hidden = false; say(`Flashing stopped: ${e.message}`, true); }
+  }
 }
 
 // ---- start ----
@@ -673,7 +706,7 @@ function init() {
   $('btn-usb').addEventListener('click', onUsbSelected);
   $('btn-keep').addEventListener('click', keepCopy);
   document.querySelectorAll('input[name=fwmode]').forEach((r) => r.addEventListener('change', () => { fw.mode = r.value; if (r.checked) prepareImage(); }));
-  $('ack').addEventListener('change', () => { $('btn-flash').disabled = !(fw.usb && fw.image && $('ack').checked); });
+  $('ack').addEventListener('change', () => { $('btn-flash').disabled = fw.busy || !(fw.usb && fw.image && $('ack').checked); });
   $('btn-flash').addEventListener('click', flashNow);
   $('btn-usb2').addEventListener('click', onBootloaderSelected);
   refreshAll(); renderPresetCards();

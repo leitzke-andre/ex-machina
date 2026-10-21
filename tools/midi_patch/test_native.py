@@ -66,7 +66,7 @@ def interrupt(fn):
     except UcError:
         if mu.reg_read(UC_ARM_REG_PC) != 0x08000000: raise
     mu.context_restore(ctx)
-mu.reg_write(UC_ARM_REG_SP, vec[0]); pc = [vec[1]]
+mu.reg_write(UC_ARM_REG_SP, 0x20000C90); pc = [vec[1]]                # the bootloader's own stack, as if it jumped without loading ours
 def run(n_slices, slice_len=20000, ms_per_slice=1):
     for _ in range(n_slices):
         try: mu.emu_start(pc[0] | 1, 0, count=slice_len)
@@ -77,6 +77,10 @@ def run(n_slices, slice_len=20000, ms_per_slice=1):
 check('the vector table: stack 0x20001C18, reset = native_reset, SysTick and USB entries ours',
       (vec[0], vec[1], vec[15], struct.unpack_from('<I', img, 0x40 + 20 * 4)[0]), (0x20001C18, SYM['native_reset'] | 1, SYM['mmk3_systick'] | 1, SYM['mmk3_usb_isr'] | 1))
 run(1500)                                            # the start-up (0.3 s countdown) and the first main-loop passes
+sps = []
+for _ in range(20): run(1); sps.append(mu.reg_read(UC_ARM_REG_SP))
+check('the reset handler sets its own stack: started on the bootloader\'s (0x20000C90, just above the transmit ring), the main loop runs below 0x20001C18',
+      all(0x20001818 <= v <= 0x20001C18 for v in sps), True, [hex(v) for v in sps[:4]])
 cntr = rd(0x40005C40, 4)
 check('the start-up reached the end: USB started (interrupts on, D+ pull-up on PA8 high)', (cntr, (p.regs[0x4001080C] >> 8) & 1), (0xBF00, 1))
 check('the LED chips were set up (both chips: function page, frame cleared, normal operation)', sorted({t[0] for t in led.tx}), [0x74, 0x77])

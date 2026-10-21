@@ -13,9 +13,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'midi_patch'))
 import build_patch as bp
 STOCK_LEN = 0x9DC8                       # NI's firmware image, 40,392 bytes (build_patch.STOCK_LEN)
+STOCK_SHA256 = '76ebf72d33961639a0bd042ba32354dd8dc07569be69175546eb9fc06e5c5917'   # NI's firmware 1.20 for the Mikro MK3 (tools/restore_stock.sh checks the same)
 
 def make(stock, patched):
-    assert len(stock) == STOCK_LEN, 'not the stock image'
+    assert len(stock) == STOCK_LEN and hashlib.sha256(stock).hexdigest() == STOCK_SHA256, "not NI's firmware 1.20 (the bundle is made for exactly that image)"
     assert patched[:2] and len(patched) > len(stock)
     edits, i = [], 0                                    # runs of bytes that differ; no unchanged (NI) byte is copied into the bundle
     while i < len(stock):
@@ -57,7 +58,7 @@ def apply(stock, bundle):
 
 if __name__ == '__main__':
     a = [x for x in sys.argv[1:] if x != '--check']
-    stock, patched = open(a[0], 'rb').read()[:STOCK_LEN], open(a[1], 'rb').read()
+    stock, patched = open(a[0], 'rb').read(), open(a[1], 'rb').read()      # (the whole file: a longer one is not NI's image)
     b = make(stock, patched)
     assert apply(stock, b) == patched, 'the bundle does not rebuild the image'
     path = a[2] if len(a) > 2 else os.path.join(HERE, 'patch_bundle.json')

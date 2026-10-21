@@ -14,7 +14,8 @@ directly, so NI's updater is not needed for any of this.
 | Runs on | Chrome / Edge, any OS | macOS | any OS with Python, pyusb and libusb |
 | Builds the patched image for you | yes, from your NI updater | no (give it an image) | no |
 | Flashes the standalone image | not yet | yes | yes |
-| Checks first | image checksum before and after patching | nothing else has the device open | the image's vector table and size; dry run unless `--yes-flash` |
+| Checks first | image checksum before and after patching; only a Mikro MK3 can be selected | the device is there (by its USB ids) and nothing else has it open | the image's vector table, size and USB identity; dry run unless `--yes-flash` |
+| Checks after | the device came back in normal mode (back in its bootloader = failed) | as the client | the device came back in normal mode with the version the image names |
 
 All three do the same thing on the wire: ask the running firmware to restart into the bootloader (`DFU_DETACH`), send the image in 64-byte blocks,
 and wait for the controller to come back with the new firmware. The whole run takes about 6 seconds.
@@ -50,6 +51,7 @@ flasher/flash_guarded.sh image.bin [python with pyusb]
 ```
 If it says *something else has the device open*, it names the program. Usually that is a browser that was given USB access to the controller on
 the setup page; quit the browser completely (closing the tab may not be enough) and run it again. macOS's own MIDI service is not counted.
+If it says *no device found*, the controller is not connected (or not recognised): it refuses rather than guess.
 
 Output of a good run:
 ```text
@@ -88,6 +90,7 @@ The firmware has three ways back to the bootloader, which always accepts a new i
 | The firmware keeps crashing | Nothing: after **three watchdog resets in a row** the firmware puts itself into the bootloader |
 | It shows `toucherror`, or the touch strip is dead | Unplug it and plug it back in |
 | After a flash it stays in the bootloader | The image was not accepted or does not start: flash a known-good image (or NI's) |
+| A flash stopped half-way (cable pulled, an error) | The controller stays in its bootloader, which never starts a half-written firmware: flash again |
 
 In the bootloader the controller appears as USB device `17cc:1702` and **stays there until an image is flashed**,
 even across unplugging. From there, flash any image with `dfu_client.py flash image.bin --yes-flash` (it finds the bootloader directly), with

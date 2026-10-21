@@ -33,12 +33,20 @@ def ring_run(fn, w, r, payload):
     except UcError:
         if mu.reg_read(UC_ARM_REG_PC) != 0x08000000: raise
     return mu.reg_read(UC_ARM_REG_R0), bytes(mu.mem_read(0x20000146, 4)), bytes(mu.mem_read(0x20000778, 0x500))
-rng = random.Random(1); bad = []
+def ring_model(w, r, payload, ring):                    # whole packets only: as many 4-byte packets as fit, the rest dropped
+    room = ((r + 0x500 - w - 1) % 0x500) & ~3; n = min(len(payload), room) & ~3; ring = bytearray(ring)
+    for k in range(n): ring[(w + k) % 0x500] = payload[k]
+    return n, struct.pack('<HH', (w + n) % 0x500, r), bytes(ring)
+rng = random.Random(1); bad = []; same = []
 for t in range(300):
     w, r = rng.randrange(0x500), rng.randrange(0x500)
-    pl = bytes(rng.randrange(256) for _ in range(rng.choice((4, 8, 64, 300, 0x4FF, 0x600))))
-    if ring_run(0x08008A38, w, r, pl) != ring_run(SYM['ring_put'], w, r, pl): bad.append((t, w, r, len(pl)))
-check('the transmit ring: our enqueue leaves the same ring, indices and count as the stock one (300 random states, full rings too)', bad[:3], [])
+    w -= w % 4 if rng.random() < 0.8 else 0                                    # (mostly packet-aligned, as the firmware keeps it)
+    pl = bytes(rng.randrange(256) for _ in range(rng.choice((4, 8, 64, 300, 0x4FF, 0x600, 3, 5))))
+    ours = ring_run(SYM['ring_put'], w, r, pl)
+    if ours != ring_model(w, r, pl, (bytes(data) + bytes(0x5000))[0x778:0x778 + 0x500]): bad.append((t, w, r, len(pl)))
+    if len(pl) % 4 == 0 and len(pl) <= ((r + 0x500 - w - 1) % 0x500) and ours != ring_run(0x08008A38, w, r, pl): same.append((t, w, r, len(pl)))
+check('the transmit ring: our enqueue writes whole packets only, as many as fit (300 random states, full rings, odd lengths): the model', bad[:3], [])
+check('... and where everything fits, the same ring, indices and count as the stock enqueue', same[:3], [])
 
 # ---- enumeration -----------------------------------------------------------------------------------------------------------------------------------------
 def stock_descriptors():
@@ -101,8 +109,22 @@ reply = __import__('devsim').sysex_messages(got)
 check('a SysEx INFO request over bulk OUT reaches the translator; its reply comes back over bulk IN', [mc.parse_reply(m)['cmd'] for m in reply], [0x10])
 check('... and says protocol 2 with our config size', (mc.parse_reply(reply[0])['protocol'], mc.parse_reply(reply[0])['cfg_size']) if reply else None, (2, mc.CFG_SIZE))
 
+# ---- endpoint 1: a halt from the host, SET_INTERFACE, endpoint 0's halt --------------------------------------------------------------------------------
+check('SET_FEATURE(ENDPOINT_HALT) on 0x81: acknowledged, GET_STATUS says halted', (usb.control(setup_packet(0x02, 3, 0, 0x81))[1], usb.control(setup_packet(0x82, 0, 0, 0x81, 2))[0]), ('ok', b'\1\0'))
+midi_out(mc.info_request()); tick(6)
+check('... and stays halted while a reply waits (the transmit path only arms a NAKing endpoint, never a halted one)', ((usb.ep[1] >> 4) & 3, usb.bulk_in(1)), (1, None))
+usb.control(setup_packet(0x02, 1, 0, 0x81)); got = []
+for _ in range(8):
+    tick(); b = usb.bulk_in(1)
+    if b: got.append(b)
+check('CLEAR_FEATURE(ENDPOINT_HALT): the endpoint works again and the waiting reply comes out', [mc.parse_reply(m)['cmd'] for m in __import__('devsim').sysex_messages(got)], [0x10])
+usb.ep[1] |= 0x4040                                                              # (both data toggles at DATA1, as after an odd number of packets)
+check('SET_INTERFACE 1 alternate 0 after traffic: endpoint 1 starts over at DATA0 both ways (USB 2.0 9.1.1.5)', (usb.control(setup_packet(0x01, 11, 0, 1))[1], usb.ep[1] & 0x4040), ('ok', 0))
+check('CLEAR_FEATURE(ENDPOINT_HALT) on endpoint 0: acknowledged (nothing to clear)', usb.control(setup_packet(0x02, 1, 0, 0x00))[1], 'ok')
+
 # ---- DFU_DETACH ------------------------------------------------------------------------------------------------------------------------------------------
 st = usb.control(setup_packet(0x21, 0, 255, 2))[1]
+check('after DETACH, DFU GETSTATE and GETSTATUS report appDETACH (1)', (usb.control(setup_packet(0xA1, 5, 0, 2, 1))[0], usb.control(setup_packet(0xA1, 3, 0, 2, 6))[0][4]), (b'\1', 1))
 ms = struct.unpack('<H', mu.mem_read(0x200010E8, 2))[0]
 tick(3); early = SYM['enter_dfu'] in events
 mu.mem_write(0x200010E8, struct.pack('<H', (ms + 25) & 0xFFFF)); tick(1)
@@ -124,4 +146,12 @@ except RuntimeError: pass
 check('configured but no request answered after 15 s: the same restart (a broken MIDI path cannot strand the device)', (before != 0x05FA0004, struct.unpack('<I', mu3.mem_read(0xE000ED0C, 4))[0]), (True, 0x05FA0004))
 mu.mem_write(0x200010E8, struct.pack('<H', 15200)); tick(1)
 check('... while a boot that answered a request keeps running', SYM['enter_dfu'] in events, True)
+mu4, usb4, ev4 = ours(); usb4.control(setup_packet(0x00, 5, 3)); usb4.control(setup_packet(0x00, 9, 1))
+usb4.control(setup_packet(0x21, 0, 255, 2)); mu4.mem_write(0x200010E8, struct.pack('<H', 100)); usb4.reset()      # DETACH, then the host resets the bus
+mu4.mem_write(0x200010E8, struct.pack('<H', 130)); usb4.run(SYM['own_usb_tx'] | 1)
+check('DETACH followed by a bus reset: DFU mode all the same (DFU 1.1: the reset is how a host completes a detach)', SYM['enter_dfu'] in ev4, True)
+mu5, usb5, ev5 = ours(); usb5.control(setup_packet(0x00, 5, 3)); usb5.control(setup_packet(0x00, 9, 1))
+mu5.mem_write(0x20000146, struct.pack('<HH', 64, 0)); usb5.reset(); usb5.control(setup_packet(0x00, 5, 3)); usb5.control(setup_packet(0x00, 9, 1))
+mu5.mem_write(0x200010E8, struct.pack('<H', 50)); usb5.run(SYM['own_usb_tx'] | 1)
+check('what the ring held before a bus reset is not sent to the new session (64 stale bytes dropped)', (usb5.bulk_in(1), struct.unpack('<HH', mu5.mem_read(0x20000146, 4))), (None, (64, 64)))
 print('ALL PASS' if ok else 'SOME FAILED'); sys.exit(0 if ok else 1)

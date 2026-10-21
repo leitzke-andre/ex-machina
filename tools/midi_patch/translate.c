@@ -262,6 +262,8 @@ struct state {              /* RAM above the firmware's stack, zeroed by mmk3_in
     u8 own_init;            /* this boot ran our board init (and runs our start-up and main loop) */
     u8 boot_done;           /* our start-up has ended (display on, USB started) */
     u8 own_usb;             /* this boot runs our USB stack (usb.c) */
+    u8 u_flush;             /* usb.c: the interrupt asks the main loop to drop what the transmit ring held up to u_flush_to (a bus reset, a new configuration) */
+    u16 u_flush_to;
     u8 u_ctl, u_zlp, u_addr, u_addr_set, u_config, u_detach, u_ever, u_ok;   /* usb.c: control transfer state, address, configuration, DFU detach, a request answered */
     u16 u_left, u_detach_t, u_t0;
     const volatile u8 *u_ptr;
@@ -269,6 +271,11 @@ struct state {              /* RAM above the firmware's stack, zeroed by mmk3_in
     u8 reboot;              /* a reboot was asked for (SysEx 1C flag 4): done once the reply is out */
     u16 hal_ok, hal_fail;   /* LED bursts of our driver that every chip acknowledged / that one did not (for checking it on the device) */
     u16 strip_ok, strip_fail;   /* read cycles of our strip driver that worked / that the controller did not answer */
+    u8 nref[128];           /* how many sources (pads, chord notes, the arp, the sequencer, the strum, note buttons) hold each note on: the Note Off goes out
+                               when the last one lets go, so a release never cuts a note another source still holds */
+    u8 seq_sn[16];          /* the note each sounding sequencer track started (its Note Off uses it, whatever the config says by then) */
+    u8 bent;                /* a pitch bend away from the centre was sent */
+    u8 bend_pend;           /* 0x80 | channel: the centre is still to be sent there (strip mode, channel, panic or config changed while bent) */
 };
 #define ST_ADDR 0x20004200u
 #define ST ((struct state *)ST_ADDR)
@@ -321,7 +328,36 @@ static u8 *emit_mmc(u8 *q, u8 cmd)            /* MIDI Machine Control: F0 7F 7F 
     return q + 8;
 }
 
+/* A LED back to its resting colour. The USB interrupt sets both (led_host_set), so the read and the write happen with interrupts off. */
+static void led_rest(struct state *s, u32 i)
+{
+    u32 pm;
+    __asm__ volatile("mrs %0, primask\n\tcpsid i" : "=r"(pm) :: "memory");
+    s->led[i] = s->base[i];
+    __asm__ volatile("msr primask, %0" :: "r"(pm) : "memory");
+}
+
 static u8 clamp7(u32 v, u8 lo) { return v > 127 ? 127 : (v < lo ? lo : (u8)v); }
+
+/* Notes are counted per note number (all of them sound on the one channel): a Note On always goes out (the synth retriggers), a Note Off
+ * only when no other source still holds the note. A note nobody counted (0) is released anyway. */
+static u8 *note_on(struct state *s, u8 *q, u32 ch, u8 n, u8 v)
+{
+    if (s->nref[n & 127] < 255) s->nref[n & 127]++;
+    return emit(q, (u8)(0x90 | ch), n, v);
+}
+static u8 *note_off(struct state *s, u8 *q, u32 ch, u8 n)
+{
+    if (s->nref[n & 127] > 1) { s->nref[n & 127]--; return q; }
+    s->nref[n & 127] = 0;
+    return emit(q, (u8)(0x80 | ch), n, 0);
+}
+static void notes_forget(struct state *s)          /* after a panic or a channel change: nothing is held any more */
+{
+    u32 k;
+    for (k = 0; k < 128; k++) s->nref[k] = 0;
+    s->seq_son = 0; s->sonn = 0; s->strum = 0; s->strum_off = 0;
+}
 
 /* Note On velocity through the curve table `curve`; at least 1, because a Note On with velocity 0 is a Note Off. */
 static u8 velocity(u32 val, u8 shift, u8 curve)
@@ -929,6 +965,7 @@ static void mode_action(struct state *s, const struct cfg *c, u8 act, u8 par)
         announce_chord(s);
     } else if (act == ACT_STRIP) {
         if (s->strum) { s->strum_off = s->strum; s->strum = 0; }
+        if (s->bent && par != 1) { s->bend_pend = (u8)(0x80 | (c->channel & 15)); s->bent = 0; }   /* leaving pitch bend: back to the centre */
         s->strip_mode = par > 3 ? 0 : par; strip_bar(s); announce_strip(s);
     } else if (act == ACT_ENCTGT) {
         u32 t = par < 3 ? par + 1u : 0;
@@ -1025,8 +1062,9 @@ static void mode_action(struct state *s, const struct cfg *c, u8 act, u8 par)
     } else if (act == ACT_CHANNEL) {
         u32 k, ch = c->channel & 15;
         ch = par == 1 ? (ch ? ch - 1 : 15) : (ch >= 15 ? 0 : ch + 1);
+        if (s->bent) { s->bend_pend = (u8)(0x80 | (c->channel & 15)); s->bent = 0; }          /* the old channel's bend back to the centre */
         ((struct cfg *)c)->channel = (u8)ch;
-        s->panic = 32; s->held = 0; s->psent = 0; s->ann = 0; s->sonn = 0; s->parp = 0; s->strum = 0;      /* what sounds on the old channel is released */
+        s->panic = 32; s->held = 0; s->psent = 0; s->ann = 0; s->parp = 0; notes_forget(s);      /* what sounds on the old channel is released */
         for (k = 0; k < sizeof s->pres; k++) s->pres[k] = 0;
         s->log_req |= 2;
         m_begin(s, T_CHANNEL); tn(s->md, 0, ch + 1, 21); m_show(s);
@@ -1036,7 +1074,8 @@ static void mode_action(struct state *s, const struct cfg *c, u8 act, u8 par)
         announce_transpose(s, c);
     } else if (act == ACT_PANIC) {
         u32 k;
-        s->panic = 32; s->held = 0; s->psent = 0; s->ann = 0; s->sonn = 0; s->parp = 0; s->strum = 0;
+        if (s->bent) { s->bend_pend = (u8)(0x80 | (c->channel & 15)); s->bent = 0; }
+        s->panic = 32; s->held = 0; s->psent = 0; s->ann = 0; s->parp = 0; notes_forget(s);
         for (k = 0; k < sizeof s->pres; k++) s->pres[k] = 0;
         m_begin(s, T_PANIC); tx(s->md, 0, T_ALLOFF, 21); m_show(s);
     }
@@ -1093,14 +1132,14 @@ static u32 strum_notes(struct state *s, const struct cfg *c, u8 *out)
 static u8 *button_event(struct state *s, const struct cfg *c, u8 *q, u8 act, u8 par, u8 now)
 {
     u8 ch = c->channel & 15;
-    if (act == ACT_NOTE) return emit(q, (now ? 0x90 : 0x80) | ch, par, now ? 127 : 0);
+    if (act == ACT_NOTE) return now ? note_on(s, q, ch, par, 127) : note_off(s, q, ch, par);
     if (act == ACT_SEQSEL) { if (now) { if (s->seq_sel < 255) s->seq_sel++; } else if (s->seq_sel) s->seq_sel--; return q; }
     if (act == ACT_SHIFT) { if (now) { if (s->shift < 255) s->shift++; } else if (s->shift) s->shift--; return q; }
     if (!now) return q;                              /* everything else acts on press only */
     if (act == ACT_CLOCKOUT) {
         s->clock_out = !s->clock_out;
         s->pulse = 0; s->acc_us = 0; s->last_ms = MS16;
-        q = emit1(q, s->clock_out ? 0xFA : 0xFC);
+        if (!s->ext_active) q = emit1(q, s->clock_out ? 0xFA : 0xFC);   /* (with an external clock running nothing is sent: no echo) */
         m_begin(s, T_CLOCK);
         if (s->clock_out) { u32 p = tx(s->md, 0, T_ON, 21); p = tc(s->md, p, ' ', 21); p = tc(s->md, p, ' ', 21); p = tn(s->md, p, s->bpm, 21); p = tc(s->md, p, ' ', 21); tx(s->md, p, T_BPM, 21); }
         else tx(s->md, 0, T_OFF, 21);
@@ -1151,7 +1190,7 @@ static u32 translate_report(const u8 *buf, u32 len)
         if (id == 1 && i + 14 <= len) {
             const u8 *r = buf + i + 1;
             u32 k, n;
-            u8 touch = r[5] & 1;
+            u8 touch = r[5] & 1, sp;
             /* Report 1 is sent only when something changes, so the very first one can already be a button press (seen on the real
              * device: the first report after a quiet period was "Project pressed"). Buttons, encoder touch and the strip therefore
              * start from "nothing pressed"; only the encoder counter, whose start value is unknown, takes its baseline from the
@@ -1194,13 +1233,14 @@ static u32 translate_report(const u8 *buf, u32 len)
                                     dirty = 1;
                                 }
                             } else {                                    /* momentary: bright while pressed, then back to rest */
-                                s->led[k] = now ? c->btn_led_on : s->base[k];
+                                if (now) s->led[k] = c->btn_led_on; else led_rest(s, k);
                                 dirty = 1;
                             }
                         }
                     }
                 }
             }
+            ch = c->channel & 15;                            /* (a channel button above may have changed it: the rest of the buffer plays on the new one) */
             if (s->have) {
                 /* The 4-bit counter counts UP when the knob is turned clockwise (measured on the real device with a clockwise-only
                  * recording), so the step is (new - old) and clockwise is positive, like NI's engine. */
@@ -1230,30 +1270,31 @@ static u32 translate_report(const u8 *buf, u32 len)
                 }
             }
             ROOM(48);
+            sp = r[9] > 200 ? 200 : r[9];                /* the strip position, 1..200 (0 = no finger): the zones and the LED index below rely on the limit */
             if (s->strip_mode == 1) {                        /* pitch bend over the whole strip, back to the centre when the finger leaves */
-                if (r[9] && r[9] != s->pos) { u32 v = (u32)(r[9] - 1) * 16383 / 199; q = emit(q, 0xE0 | ch, (u8)(v & 127), (u8)(v >> 7)); }
-                else if (!r[9] && s->pos) q = emit(q, 0xE0 | ch, 0, 64);
+                if (sp && sp != s->pos) { u32 v = (u32)(sp - 1) * 16383 / 199; q = emit(q, 0xE0 | ch, (u8)(v & 127), (u8)(v >> 7)); s->bent = v != 8192; }
+                else if (!sp && s->pos) { q = emit(q, 0xE0 | ch, 0, 64); s->bent = 0; }
             } else if (s->strip_mode == 2) {                 /* mod wheel: CC 1, keeps its value when the finger leaves, shown as a bar */
-                if (r[9] && r[9] != s->pos) {
-                    u8 v = clamp7((u32)(r[9] - 1) * 127 / 199, 0);
+                if (sp && sp != s->pos) {
+                    u8 v = clamp7((u32)(sp - 1) * 127 / 199, 0);
                     if (v != s->mod_val) { s->mod_val = v; q = emit(q, 0xB0 | ch, 1, v); strip_bar(s); dirty = 1; }
                 }
             } else if (s->strip_mode == 3) {                 /* strum: the strip is divided among the notes of the held pads (else of all 16 pads) */
-                if (r[9] != s->pos) {
-                    u8 nt[16]; u32 n = strum_notes(s, c, nt), zone = r[9] ? (u32)(r[9] - 1) * n / 200 : 0xFF;
-                    if (s->strum && (!r[9] || nt[zone] + 1 != s->strum)) { q = emit(q, 0x80 | ch, (u8)(s->strum - 1), 0); s->strum = 0; }
-                    if (r[9] && !s->strum) { q = emit(q, 0x90 | ch, nt[zone], 100); s->strum = (u8)(nt[zone] + 1); }
+                if (sp != s->pos) {
+                    u8 nt[16]; u32 n = strum_notes(s, c, nt), zone = sp ? (u32)(sp - 1) * n / 200 : 0xFF;
+                    if (s->strum && (!sp || nt[zone] + 1 != s->strum)) { q = note_off(s, q, ch, (u8)(s->strum - 1)); s->strum = 0; }
+                    if (sp && !s->strum) { q = note_on(s, q, ch, nt[zone], 100); s->strum = (u8)(nt[zone] + 1); }
                 }
             } else if (c->strip_cc != 0xff) {
-                if (r[9] && r[9] != s->pos)
-                    q = emit(q, 0xB0 | ch, c->strip_cc, clamp7((u32)(r[9] - 1) * 127 / 199, 0));
-                else if (!r[9] && s->pos && (c->flags & 1))
+                if (sp && sp != s->pos)
+                    q = emit(q, 0xB0 | ch, c->strip_cc, clamp7((u32)(sp - 1) * 127 / 199, 0));
+                else if (!sp && s->pos && (c->flags & 1))
                     q = emit(q, 0xB0 | ch, c->strip_cc, 0);
             }
             if (c->led_flags & LF_STRIP) {                   /* the LED under the finger: positions 1..200 -> 25 LEDs */
-                u8 want = r[9] ? (u8)(STRIP_LED0 + (u32)(r[9] - 1) * 25 / 200 + 1) : 0;
+                u8 want = sp ? (u8)(STRIP_LED0 + (u32)(sp - 1) * 25 / 200 + 1) : 0;
                 if (want != s->strip_led) {
-                    if (s->strip_led) s->led[s->strip_led - 1] = s->base[s->strip_led - 1];
+                    if (s->strip_led) led_rest(s, s->strip_led - 1u);
                     if (want) s->led[want - 1] = strip_code(c);
                     s->strip_led = want; dirty = 1;
                 }
@@ -1261,7 +1302,7 @@ static u32 translate_report(const u8 *buf, u32 len)
             for (k = 0; k < 5; k++) s->btn[k] = r[k];
             s->touch = touch;
             s->enc = r[6];
-            s->pos = r[9];
+            s->pos = sp;
             s->have = 1;
             i += 14;
         } else if (id == 2 && i + 64 <= len) {
@@ -1285,27 +1326,28 @@ static u32 translate_report(const u8 *buf, u32 len)
                     if (s->padfn) {                              /* mute / solo edit: the hit toggles the pad */
                         u16 *w = s->padfn == 1 ? &s->mute : &s->solo;
                         *w ^= bit; pad_leds(s); dirty = 1;
+                        { u8 p2; for (p2 = 0; p2 < 16; p2++) if (!pad_audible(s, p2)) { arp_drop_pad(s, p2); s->parp &= (u16)~(1u << p2); } }   /* silenced: out of the arp too */
                         break;
                     }
                     if (!pad_audible(s, pad)) break;
                     cnt = pad_notes_now(s, c, pad, nb);
                     if (s->arp_on) {                             /* the notes go to the arp's list; it plays them in time */
                         if (s->latch && !(s->held & ~bit)) s->ann = 0;       /* a new chord replaces the latched one */
-                        if (!s->ann) { s->astep = 0; if (!s->ext_active && !s->clock_out) s->arp_kick = 1; }
+                        if (!s->ann) { s->astep = 0; if (!s->ext_active && !s->clock_out && !s->seq_on) s->arp_kick = 1; }
                         for (j = 0; j < cnt; j++) arp_add(s, nb[j], vel, pad);
                         s->parp |= bit;
                         s->cn[pad][0] = nb[0]; s->cnn[pad] = 0; s->held |= bit; s->pres[pad] = 0;
                         if ((c->led_flags & LF_PAD_HIT) && pl < 80) { s->led[pl] = pad_code(c, 3); dirty = 1; }
                         break;
                     }
-                    if (s->held & bit) for (j = 0; j < s->cnn[pad]; j++) q = emit(q, 0x80 | ch, s->cn[pad][j], 0);
-                    for (j = 0; j < cnt; j++) { q = emit(q, 0x90 | ch, nb[j], vel); s->cn[pad][j] = nb[j]; }
+                    if (s->held & bit) for (j = 0; j < s->cnn[pad]; j++) q = note_off(s, q, ch, s->cn[pad][j]);
+                    for (j = 0; j < cnt; j++) { q = note_on(s, q, ch, nb[j], vel); s->cn[pad][j] = nb[j]; }
                     s->cnn[pad] = (u8)cnt; s->held |= bit; s->pres[pad] = 0;
                     if ((c->led_flags & LF_PAD_HIT) && pl < 80) { s->led[pl] = pad_code(c, 3); dirty = 1; }
                     break;
                 }
                 case 2: case 3:
-                    if (s->held & bit) { u32 j; for (j = 0; j < s->cnn[pad]; j++) q = emit(q, 0x80 | ch, s->cn[pad][j], 0); }
+                    if (s->held & bit) { u32 j; for (j = 0; j < s->cnn[pad]; j++) q = note_off(s, q, ch, s->cn[pad][j]); }
                     if (s->parp & bit) { s->parp &= ~bit; if (!s->latch) arp_drop_pad(s, pad); }
                     s->cnn[pad] = 0;
                     s->held &= ~bit;
@@ -1313,14 +1355,14 @@ static u32 translate_report(const u8 *buf, u32 len)
                         q = pm == 1 ? emit(q, 0xD0 | ch, 0, 0) : emit(q, 0xB0 | ch, c->press_cc, 0);
                         s->psent = 0;
                     }
-                    if ((c->led_flags & LF_PAD_HIT) && pl < 80) { s->led[pl] = s->base[pl]; dirty = 1; }
+                    if ((c->led_flags & LF_PAD_HIT) && pl < 80) { led_rest(s, pl); dirty = 1; }
                     break;
                 case 4:
                     if (s->held & bit) {
                         u8 p = clamp7(val >> c->vel_shift, 0);
                         if (p != s->pres[pad] && pm < 3) {
                             s->pres[pad] = p;
-                            if (pm == 0) q = emit(q, 0xA0 | ch, s->cn[pad][0], p);
+                            if (pm == 0) { if (s->cnn[pad]) q = emit(q, 0xA0 | ch, s->cn[pad][0], p); }   /* (a pad held through the arp sounds nothing of its own) */
                             else { q = pm == 1 ? emit(q, 0xD0 | ch, p, 0) : emit(q, 0xB0 | ch, c->press_cc, p); s->psent = p != 0; }
                         }
                     }
@@ -1469,6 +1511,7 @@ static u32 cfg_check(const struct cfg *c)
     for (i = 0; i < 48; i++) {
         if (c->btn_cc[i] > 127 && c->btn_cc[i] != 0xFF) return OFS(btn_cc) + i + 1;
         if (c->btn_act[i] > ACT_LAST) return OFS(btn_act) + i + 1;
+        if ((c->btn_act[i] == ACT_NOTE || c->btn_act[i] == ACT_MMC) && c->btn_cc[i] > 127) return OFS(btn_cc) + i + 1;   /* (0xFF would go out as a status byte) */
     }
     if (c->enc_cc > 127 && c->enc_cc != 0xFF) return OFS(enc_cc) + 1;
     if (c->strip_cc > 127 && c->strip_cc != 0xFF) return OFS(strip_cc) + 1;
@@ -1493,6 +1536,7 @@ static u32 cfg_check(const struct cfg *c)
     for (i = 0; i < 48; i++) {
         if (c->btn_cc2[i] > 127 && c->btn_cc2[i] != 0xFF) return OFS(btn_cc2) + i + 1;
         if (c->btn_act2[i] > ACT_LAST) return OFS(btn_act2) + i + 1;
+        if ((c->btn_act2[i] == ACT_NOTE || c->btn_act2[i] == ACT_MMC) && c->btn_cc2[i] > 127) return OFS(btn_cc2) + i + 1;
     }
     if (c->scale >= SCALE_N) return OFS(scale) + 1;
     if (c->chord_type >= CHORD_N) return OFS(chord_type) + 1;
@@ -1562,12 +1606,12 @@ static void mode_reset(struct state *s, const struct cfg *c)
     for (k = 0; k < 24; k++) s->tval[k / 3][k % 3] = 64;
     s->enc_page = 0; s->page = 0;
     s->padfn = 0; s->mute = s->solo = 0;
-    s->arp_on = 0; s->ann = 0; s->parp = 0; s->latch = 0; s->clock_out = 0;     /* (what the arp has sounding is released by the tick) */
+    s->arp_on = 0; s->ann = 0; s->parp = 0; s->latch = 0; s->clock_out = 0;     /* (what sounds was released by release_all, or nothing sounds: power-up) */
     s->arp_type = c->arp_type; s->arp_rate = c->arp_rate; s->arp_oct = c->arp_oct; s->bpm = (u16)(c->tempo + 20);
     s->acc_us = 0; s->pulse = 0; s->last_ms = MS16; s->astep = 0; s->arp_kick = 0; s->tap_n = 0;
     if (s->strum) s->strum_off = s->strum;
     s->strum = 0; s->snap_have = 0;
-    s->seq_on = 0; s->seq_cur = 16; s->seq_sel = 0; s->seq_kick = 0; s->seq_led = 0;       /* (the patterns stay; what the sequencer has sounding is released by the tick) */
+    s->seq_on = 0; s->seq_cur = 16; s->seq_sel = 0; s->seq_kick = 0; s->seq_led = 0;       /* (the patterns stay) */
     s->tap_btn = 0xFF;
     for (k = 0; k < 39; k++) if (c->btn_act[k] == ACT_TAP || c->btn_act2[k] == ACT_TAP) { s->tap_btn = (u8)k; break; }
 }
@@ -1618,7 +1662,7 @@ static void cfg_load(struct state *s)
 #define FL_SR (*(volatile u32 *)0x4002200Cu)
 #define FL_CR (*(volatile u32 *)0x40022010u)
 #define FL_AR (*(volatile u32 *)0x40022014u)
-static void FLASH_UNLOCK(void) { FL_KEYR = 0x45670123u; FL_KEYR = 0xCDEF89ABu; }
+static void FLASH_UNLOCK(void) { if (FL_CR & 0x80u) { FL_KEYR = 0x45670123u; FL_KEYR = 0xCDEF89ABu; } }   /* (only when locked: keys written to an unlocked controller lock it until reset) */
 static void FLASH_LOCK(void) { FL_CR |= 0x80u; }
 static void FLASH_CLEAR(u32 flags) { FL_SR = flags; }
 static u32 fl_status(void) { u32 sr = FL_SR; return (sr & 1u) ? 1u : (sr & 4u) ? 2u : (sr & 0x10u) ? 3u : 4u; }
@@ -1706,6 +1750,13 @@ static u32 log_blank(void)
     return 1;
 }
 
+static u32 log_has(u32 kind)                        /* the log holds a choice of this kind */
+{
+    const u32 *p = (const u32 *)LOG_BASE;
+    u32 k;
+    for (k = 0; k < LOG_WORDS; k++) if (log_valid(p[k]) && ((p[k] >> 8) & 0xFF) == kind) return 1;
+    return 0;
+}
 static void log_apply(struct cfg *c)                /* boot: the last curve in the log */
 {
     const u32 *p = (const u32 *)LOG_BASE;
@@ -1758,7 +1809,15 @@ static void log_append(struct state *s, u32 kind, u32 value)
     u32 k;
     for (k = 0; k < LOG_WORDS && p[k] != 0xFFFFFFFFu; k++) { }
     if (k == LOG_WORDS) {
-        if (s->saved) { if (save_write(s, s->cfgp)) s->dirty = 0; return; }
+        if (s->saved) {                              /* the saved config with the log's choices (and this one) baked in: the active config may be a slot or a SET never saved */
+            struct cfg *t = &s->cfgbuf[s->cfgi ^ 1];
+            if (!rec_load(SAVE_PAGE, t)) return;
+            log_apply(t);
+            if (kind == LOG_KIND_CURVE && value <= 8) t->vel_curve = (u8)value;
+            if (kind == LOG_KIND_CHANNEL && value <= 15) t->channel = (u8)value;
+            save_write(s, t);
+            return;
+        }
         if (!save_erase()) return;
         k = 0;
     }
@@ -1796,9 +1855,36 @@ static u32 pat_write(struct state *s)                   /* 1 on success; builds 
 /* ---- activating a config ---- */
 
 /* The active config has changed: forget state that depended on the old one, rebuild the LEDs, apply the pad sensitivity. */
+/* Everything that sounds is released with the config it was started with (its channel, its notes), before another config takes over (a slot,
+ * a SET, RESET): held pads and chords, held note buttons, the arp, the sequencer, the strum note, a bent pitch. */
+static void release_all(struct state *s, const struct cfg *o)
+{
+    u8 buf[64], *q = buf;
+    u32 p, j, ch = o->channel & 15;
+#define RFLUSH() do { if ((u32)(q - buf) + 8 > sizeof buf) { ENQUEUE(buf, (u32)(q - buf)); q = buf; } } while (0)
+    for (p = 0; p < 16; p++) if ((s->held >> p) & 1) for (j = 0; j < s->cnn[p]; j++) { RFLUSH(); q = note_off(s, q, ch, s->cn[p][j]); }
+    for (p = 0; p < 41; p++) {                       /* note buttons held down, with the layer they were pressed on */
+        u8 down = p < 40 ? (s->btn[p >> 3] >> (p & 7)) & 1 : s->touch, lay = (s->lay[p >> 3] >> (p & 7)) & 1;
+        if (down && (lay ? o->btn_act2[p] : o->btn_act[p]) == ACT_NOTE) { RFLUSH(); q = note_off(s, q, ch, lay ? o->btn_cc2[p] : o->btn_cc[p]); }
+    }
+    for (j = 0; j < s->sonn; j++) { RFLUSH(); q = note_off(s, q, ch, s->son[j]); }
+    for (p = 0; p < 16; p++) if ((s->seq_son >> p) & 1) { RFLUSH(); q = note_off(s, q, ch, s->seq_sn[p]); }
+    RFLUSH();
+    if (s->strum) q = note_off(s, q, ch, (u8)(s->strum - 1));
+    if (s->strum_off) q = note_off(s, q, ch, (u8)(s->strum_off - 1));
+    if (s->bent || s->bend_pend) { RFLUSH(); q = emit(q, (u8)(0xE0 | (s->bend_pend ? s->bend_pend & 15 : ch)), 0, 64); }
+    if (s->psent) { RFLUSH(); q = o->press_mode == 1 ? emit(q, (u8)(0xD0 | ch), 0, 0) : emit(q, (u8)(0xB0 | ch), o->press_cc, 0); }
+#undef RFLUSH
+    if (q != buf) ENQUEUE(buf, (u32)(q - buf));
+    for (p = 0; p < 16; p++) s->cnn[p] = 0;
+    s->held = 0; s->parp = 0; s->psent = 0; s->bent = 0; s->bend_pend = 0;
+    notes_forget(s);
+}
+
 static void cfg_activate(struct state *s, const struct cfg *c)
 {
     u32 k;
+    if (s->cfgp) release_all(s, s->cfgp);
     for (k = 0; k < sizeof s->tog; k++) s->tog[k] = 0;
     s->encabs = c->enc_init & 127;
     mode_reset(s, c);                               /* the modes start over with a new config (the velocity curve is part of it) */
@@ -1829,14 +1915,17 @@ static void cfg_commit(struct state *s, const struct cfg *n)
 static u32 slot_next(struct state *s)
 {
     u32 cur = s->slot_cur, k, n;
+    struct cfg *t = &s->cfgbuf[s->cfgi ^ 1];
     if (!cur)
-        for (k = 0; k < 4 && !cur; k++) {
-            struct cfg *t = &s->cfgbuf[s->cfgi ^ 1];
-            if (rec_load(SLOT_PAGE(k), t) && same8(t, s->cfgp, sizeof *t)) cur = k + 1;
-        }
+        for (k = 0; k < 4 && !cur; k++)
+            if (rec_load(SLOT_PAGE(k), t)) {
+                if (log_has(LOG_KIND_CURVE)) t->vel_curve = s->cfgp->vel_curve;       /* (changed on the device and kept in the log: then not part of the match) */
+                if (log_has(LOG_KIND_CHANNEL)) t->channel = s->cfgp->channel;
+                if (same8(t, s->cfgp, sizeof *t)) cur = k + 1;
+            }
     for (k = 1; k <= 4; k++) {
         n = (cur + k - 1) & 3;                           /* (cur 0: slot 1 first) */
-        if (rec_ok(SLOT_PAGE(n))) return n + 1;
+        if (rec_load(SLOT_PAGE(n), t)) return n + 1;     /* (a slot this firmware would refuse is skipped like an empty one) */
     }
     return 0;
 }
@@ -1907,7 +1996,7 @@ static u32 peek_ok(u32 a, u32 n)
         || IN(0x20000000u, 0x20004FFFu)              /* RAM (20 KB) */
         || IN(0x1FFFF7E0u, 0x1FFFF7FFu)              /* flash size (16 bit) and the 96-bit unique ID */
         || IN(0x1FFFF800u, 0x1FFFF80Fu)              /* option bytes (read protection, write protection) */
-        || IN(0x40022000u, 0x4002202Fu)              /* flash interface: ACR, SR, CR, OBR, WRPR */
+        || IN(0x40022000u, 0x40022023u)              /* flash interface: ACR, KEYR, OPTKEYR, SR, CR, AR, (reserved), OBR, WRPR */
         || IN(0xE0042000u, 0xE0042003u)              /* DBGMCU_IDCODE */
         || IN(0xE000ED00u, 0xE000ED3Fu)              /* SCB: CPUID, ICSR, VTOR, AIRCR, SCR, CCR, SHPR, SHCSR, fault status */
         || IN(0xE000E010u, 0xE000E01Fu)              /* SysTick */
@@ -1948,7 +2037,7 @@ static void req_start(struct state *s, const u8 *b, u32 n)
         for (k = 0; k < 24; k++) {
             u8 ch = k < NAME_MAX && k + 2 < n ? b[k + 2] : 0xFF;
             if (ch != 0xFF) { if (ch >= 97 && ch <= 122) ch -= 32; if (ch < 32 || ch > 95) ch = '?'; }
-            s->slname[k] = ch;
+            s->stage[k] = ch;                        /* (staged: slname belongs to the main loop, which takes it over in request()) */
         }
     }
     s->req = b[0];
@@ -1963,12 +2052,12 @@ static void request(struct state *s)                 /* main loop: one pending r
         u32 n = s->req_arg;
         if (s->req_err) status = 1;
         else if (n > 3) status = 2;
-        else if (cmd == 0x15) { if (rec_write(s, SLOT_PAGE(n), s->cfgp, 1)) s->slot_cur = (u8)(n + 1); else status = 3; }
+        else if (cmd == 0x15) { copy8(s->slname, s->stage, 24); if (rec_write(s, SLOT_PAGE(n), s->cfgp, 1)) s->slot_cur = (u8)(n + 1); else status = 3; }
         else { struct cfg *t = &s->cfgbuf[s->cfgi ^ 1]; if (rec_load(SLOT_PAGE(n), t)) { cfg_commit(s, t); slname_load(s, SLOT_PAGE(n)); s->slot_cur = (u8)(n + 1); } else status = 4; }
         rep_start(s, 0x40 + cmd); rep_byte(s, status); rep_end(s);
     } else if (cmd == 0x17) {                        /* which slots hold a config: a bit mask */
         u32 i, mask = 0;
-        for (i = 0; i < 4; i++) if (rec_ok(SLOT_PAGE(i))) mask |= 1u << i;
+        for (i = 0; i < 4; i++) if (rec_load(SLOT_PAGE(i), &s->cfgbuf[s->cfgi ^ 1])) mask |= 1u << i;   /* (one this firmware would refuse to load is not listed) */
         rep_start(s, 0x57); rep_byte(s, 0); rep_byte(s, (u8)mask);
         for (i = 0; i < 4; i++) {                    /* then the names: 20 characters each, 0 = none / padding */
             const u8 *nm = (const u8 *)(SLOT_PAGE(i) + SLOT_NAME);
@@ -2038,13 +2127,14 @@ static void request(struct state *s)                 /* main loop: one pending r
         rep_end(s);
     } else if (cmd == 0x14) {
         cfg_commit(s, CFG_DEFAULTS);
-        s->dirty = s->saved;                         /* different from what is saved, unless nothing is saved */
+        s->dirty = (u8)(s->saved || !log_blank());   /* different from what the next boot loads (the saved config, or the defaults plus the settings log) */
         if (s->req_arg == 1) {
             if (!save_erase()) status = 3;
             else { s->saved = 0; s->dirty = 0; }
         }
         rep_start(s, 0x54); rep_byte(s, status); rep_end(s);
     }
+    __asm volatile("" ::: "memory");                /* (every use of stage[] / req_arg above is done before the store below) */
     s->req = 0;                                      /* only now may the interrupt take the next one (it would overwrite stage[] before) */
 }
 
@@ -2086,7 +2176,7 @@ static void panic_pump(struct state *s)
 static u8 *arp_off(struct state *s, const struct cfg *c, u8 *q)    /* releases what the arp has sounding */
 {
     u32 k;
-    for (k = 0; k < s->sonn; k++) q = emit(q, 0x80 | (c->channel & 15), s->son[k], 0);
+    for (k = 0; k < s->sonn; k++) q = note_off(s, q, c->channel & 15, s->son[k]);
     s->sonn = 0;
     return q;
 }
@@ -2099,7 +2189,7 @@ static u8 *arp_step(struct state *s, const struct cfg *c, u8 *q)
     q = arp_off(s, c, q);
     if (!n) return q;
     if (ty == 0) {                                   /* repeat: every held note again */
-        for (k = 0; k < n; k++) { q = emit(q, 0x90 | ch, s->an[k], s->av[k]); s->son[k] = s->an[k]; }
+        for (k = 0; k < n; k++) { q = note_on(s, q, ch, s->an[k], s->av[k]); s->son[k] = s->an[k]; }
         s->sonn = (u8)n; s->astep++;
         return q;
     }
@@ -2112,7 +2202,7 @@ static u8 *arp_step(struct state *s, const struct cfg *c, u8 *q)
     else j = s->astep % m;
     k = s->ixs[j % n];
     note = (u8)(s->an[k] + 12 * (j / n));
-    if (s->an[k] + 12 * (j / n) <= 127) { q = emit(q, 0x90 | ch, note, s->av[k]); s->son[0] = note; s->sonn = 1; }
+    if (s->an[k] + 12 * (j / n) <= 127) { q = note_on(s, q, ch, note, s->av[k]); s->son[0] = note; s->sonn = 1; }
     s->astep++;
     return q;
 }
@@ -2120,7 +2210,7 @@ static u8 *arp_step(struct state *s, const struct cfg *c, u8 *q)
 static u8 *seq_off(struct state *s, const struct cfg *c, u8 *q)     /* releases what the sequencer has sounding */
 {
     u32 t;
-    for (t = 0; t < 16; t++) if ((s->seq_son >> t) & 1) q = emit(q, 0x80 | (c->channel & 15), c->pad_note[padnum((u8)t)], 0);
+    for (t = 0; t < 16; t++) if ((s->seq_son >> t) & 1) q = note_off(s, q, c->channel & 15, s->seq_sn[t]);
     s->seq_son = 0;
     return q;
 }
@@ -2133,7 +2223,8 @@ static u8 *seq_step(struct state *s, const struct cfg *c, u8 *q)
     for (t = 0; t < 16; t++) {
         u32 st = (s->pat[s->seq_pat][t] >> (2 * pos)) & 3;
         if (st && pad_audible(s, padnum((u8)t))) {
-            q = emit(q, 0x90 | (c->channel & 15), c->pad_note[padnum((u8)t)], st == 2 ? 127 : 100);
+            s->seq_sn[t] = c->pad_note[padnum((u8)t)];
+            q = note_on(s, q, c->channel & 15, s->seq_sn[t], st == 2 ? 127 : 100);
             s->seq_son |= (u16)(1u << t);
         }
     }
@@ -2151,11 +2242,12 @@ static void clock_tick(struct state *s)
     if (room < 200) return;                          /* the ring is backed up: try again next time (nothing is lost, the time keeps counting) */
     s->last_ms = now;
     s->ext_active = s->ext_any && (u16)(now - s->ext_ms) < 400;
+    if (s->ext_any && !s->ext_active) s->ext_any = 0;      /* the clock stopped: forget it (else the 16-bit time wraps into "active" every 65.5 s) */
     n = (u8)(s->ext_go - s->ext_go_seen);
     if (n) { s->ext_go_seen = s->ext_go; s->pulse = 0; s->acc_us = 0; }              /* the host (re)started: the grid starts with it */
     n = (u8)(s->ext_stp - s->ext_stp_seen);
     if (n) { s->ext_stp_seen = s->ext_stp; q = arp_off(s, c, q); }
-    if (s->strum_off) { q = emit(q, 0x80 | (c->channel & 15), (u8)(s->strum_off - 1), 0); s->strum_off = 0; }
+    if (s->strum_off) { q = note_off(s, q, c->channel & 15, (u8)(s->strum_off - 1)); s->strum_off = 0; }
     if (!s->arp_on && s->sonn) q = arp_off(s, c, q);
     if (!s->seq_on && s->seq_son) q = seq_off(s, c, q);
     n = (u8)(s->ext_in - s->ext_seen); s->ext_seen = s->ext_in;
@@ -2187,7 +2279,7 @@ static void clock_tick(struct state *s)
         if (s->seq_on) {
             u32 ph = p % 6;                              /* 1/16 notes */
             if (ph == 0) { if (q != buf) { ENQUEUE(buf, (u32)(q - buf)); q = buf; } q = seq_step(s, c, q); }
-            else if (ph == 3) q = seq_off(s, c, q);
+            else if (ph == 3) { if (q != buf) { ENQUEUE(buf, (u32)(q - buf)); q = buf; } q = seq_off(s, c, q); }
         }
         if (s->tap_btn != 0xFF) {                    /* the beat: the Tap button blinks */
             u32 ph = p % 24;
@@ -2207,10 +2299,10 @@ static void clock_tick(struct state *s)
  * This is also the place for work that must not run in an interrupt. */
 /* The DFU gesture, the guard's "healthy" mark and the watchdog test. */
 #define BTN_DOWN(s, k) (((s)->btn[(k) >> 3] >> ((k) & 7)) & 1)
+#define EP1_TX_BUSY() ((((*(volatile u32 *)0x40005C04u) >> 4) & 3u) == 3u)   /* EP1R STAT_TX = VALID: a packet waits for the host */
 static void safety_tick(struct state *s)
 {
     u16 now = MS16;
-    if (s->cap_hang) { __asm volatile("cpsid i"); for (;;) { } }          /* HANG: stop until the watchdog resets the chip */
     if (!s->healthy) {
         if (!s->run_t0) s->run_t0 = now ? now : 1;
         else if ((u16)(now - s->run_t0) >= HEALTHY_MS) { GUARD[1] = 0; GUARD[2] = ~0u; s->healthy = 1; }
@@ -2252,8 +2344,15 @@ static void tick_body(void)
     if (s->seq_save && !s->reply_len) { u32 ok = pat_write(s); s->seq_save = 0; if (ok) s->seq_dirty = 0; announce_text(s, T_PATTERNS, ok ? T_SAVED : T_ERROR); }
     if (s->slot_req && !s->req && !s->reply_len) { u8 r = s->slot_req; s->slot_req = 0; slot_do(s, r); }
     if (s->reply_len) reply_pump(s);
-    else if (s->reboot && ++s->reboot > 50) { __asm volatile("dsb"); AIRCR = 0x05FA0004u; for (;;) { } }   /* (a few passes after the reply went out) */
+    else if ((s->reboot || s->cap_hang) && RING_R == RING_W && !EP1_TX_BUSY()) {     /* the reply has left the device: */
+        if (s->reboot && ++s->reboot > 50) { __asm volatile("dsb"); AIRCR = 0x05FA0004u; for (;;) { } }        /* reboot (SysEx 1C flag 4) */
+        if (s->cap_hang && ++s->cap_hang > 50) { __asm volatile("cpsid i"); for (;;) { } }                    /* HANG: stop until the watchdog resets the chip */
+    }
     if (s->panic) panic_pump(s);
+    if (s->bend_pend && (RING_R + 0x500u - RING_W - 1u) % 0x500u >= 4) {          /* a bent pitch back to the centre (on the channel it was bent on) */
+        u8 b[4]; emit(b, (u8)(0xE0 | (s->bend_pend & 15)), 0, 64); ENQUEUE(b, 4); s->bend_pend = 0;
+    }
+    if (s->tap_n && (u16)(MS16 - s->tap_last) > 2000) s->tap_n = 0;   /* a pause ends the run of taps (checked here, so the 16-bit time cannot wrap past it) */
     if (s->log_req && !s->reply_len) {
         u8 r = s->log_req;
         s->log_req = 0;

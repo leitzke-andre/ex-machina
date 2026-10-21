@@ -89,8 +89,14 @@ check('Shift + Stop alone, 4 s: nothing', dfu_requested(d), False)
 d = boot(POR); d.translate(report1()); d.start()
 check('HANG with a wrong confirmation: status 1, the device goes on', (mc.parse_reply(d.ask(mc.message(mc.CMD_HANG, b'HANX'))[0])['status'], mc.parse_reply(d.ask(mc.info_request())[0])['cmd']), (1, 0x10))
 r = mc.parse_reply(d.ask(mc.hang_request(), ticks=1)[0])
-d.call(d.T_TICK, count=20000)
-check('HANG: status 0, then the next tick never returns (the watchdog ends it)', (r['status'], d.mu.reg_read(UC_ARM_REG_PC) != 0x08000000), (0, True))
+for _ in range(60): d.call(d.T_TICK, count=20000)
+check('HANG: status 0, and while the reply still waits in the ring the device goes on (the host would never see the confirmation)', (r['status'], d.mu.reg_read(UC_ARM_REG_PC)), (0, 0x08000000))
+d.drain(); stopped = None
+for k in range(60):
+    try: d.call(d.T_TICK, count=20000)
+    except RuntimeError: stopped = k; break
+    if d.mu.reg_read(UC_ARM_REG_PC) != 0x08000000: stopped = k; break
+check('... once the reply has left (ring empty, endpoint idle), a few passes later a tick never returns (the watchdog ends it)', stopped is not None and stopped <= 52, True, stopped)
 
 # ---- raw pad capture ------------------------------------------------------------------------------------------------------------------------------
 d = boot(POR); d.translate(report1()); d.start()

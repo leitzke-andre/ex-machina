@@ -213,14 +213,22 @@ check('worst case: every button as MMC (40 of them: Project always loads a slot;
       (len(out), len(d.sent[0])), (106, 424))
 sx0 = d.out_ptr + 512
 guard = bytes(d.mu.mem_read(sx0, 480))                              # sx[], led[] and base[] sit directly behind out[]
-d.translate(report2(ev21) * 3)                                      # every pad is held now: each event is a Note Off + a Note On (8 B)
+d.drain(); d.translate(report2(ev21) * 3)                           # every pad is held now: each event is a Note Off + a Note On (8 B)
 total = lambda: sum(len(b) for b in d.sent)
 check('three full pad reports in one buffer (3 x 168 B = 504 B): all delivered (the buffer is handed to the ring when it runs low); nothing behind out[] is overwritten',
       (total(), bytes(d.mu.mem_read(sx0, 480)) == guard), (504, True))
-d.translate(report2(ev21) * 5)
+d.drain(); d.translate(report2(ev21) * 5)
 check('five of them (840 B): all delivered in several pieces, nothing lost, nothing behind out[] is overwritten',
       (total(), len(d.sent) > 1, bytes(d.mu.mem_read(sx0, 480)) == guard), (840, True, True))
 d = Dev(allmmc); d.translate(report1())
 check('two report-1s in one buffer after a 320 B first one (the second releases everything: nothing to send): 80 packets',
       (len(d.translate(report1(range(41)) + report1())), total()), (80, 320))
+# a full ring (the host stopped reading): what does not fit is dropped in whole packets, never cut (a cut packet shifts every later one)
+import struct as _st
+d = Dev(); d.translate(report1())
+d.mu.mem_write(devsim.RING_R, _st.pack('<H', 0)); d.mu.mem_write(devsim.RING_W, _st.pack('<H', 0x500 - 1 - 7))     # 7 bytes of room
+d.sent.clear(); d.translate(report2(ev21))
+check('a nearly full ring (7 bytes free) takes one whole packet of a 21-hit burst, nothing cut: 4 bytes handed on', [len(b) for b in d.sent], [4])
+d.mu.mem_write(devsim.RING_R, _st.pack('<H', 0)); d.mu.mem_write(devsim.RING_W, _st.pack('<H', 0x500 - 1 - 3)); d.sent.clear(); d.translate(report2([(p, 3, 0) for p in range(16)]))
+check('... with 3 bytes free nothing at all is handed on (the stock enqueue would have taken 3 bytes of a packet)', d.sent, [])
 print('ALL PASS' if ok else 'SOME FAILED'); sys.exit(0 if ok else 1)

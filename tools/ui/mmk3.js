@@ -31,7 +31,14 @@ export function check(cfg) {
   for (const n of ['enc_mode', 'flags', 'sens', 'enc_init', 'btn_mode', 'led_flags', 'btn_led_idle', 'btn_led_on', 'pad_colour', 'strip_colour', 'vel_curve', 'fixvel', 'keys_root', 'press_mode', 'press_cc']) order.push([n, 0]);
   for (let i = 0; i < 48; i++) order.push(['btn_cc2', i], ['btn_act2', i]);
   order.push(['scale', 0], ['chord_type', 0], ['enc_tgt_cc', 0], ['enc_tgt_cc', 1], ['enc_tgt_cc', 2], ['arp_type', 0], ['arp_rate', 0], ['arp_oct', 0], ['enc_pages', 0], ['enc_page_step', 0], ['enc_accel', 0]);
-  for (const [name, i] of order) if (bad(name, i)) return D.FIELDS[name][0] + i;
+  const needsNumber = [D.ACTION_NAMES.indexOf('note'), D.ACTION_NAMES.indexOf('mmc')];
+  for (const [name, i] of order) {
+    if (bad(name, i)) return D.FIELDS[name][0] + i;
+    if ((name === 'btn_act' || name === 'btn_act2') && needsNumber.includes(cfg[D.FIELDS[name][0] + i])) {   // a note / MMC button needs its number
+      const p = name === 'btn_act' ? 'btn_cc' : 'btn_cc2';
+      if (cfg[D.FIELDS[p][0] + i] > 127) return D.FIELDS[p][0] + i;
+    }
+  }
   return null;
 }
 
@@ -161,7 +168,7 @@ export function parseRecord(page, defaults = defaultCfg()) {
   const len = v.getUint16(6, true);
   if (v.getUint32(0, true) !== D.REC_MAGIC || v.getUint16(4, true) !== D.REC_VERSION || len < 4 || len > CFG_SIZE || crc16(page.slice(12, 12 + len)) !== v.getUint16(8, true)) return null;
   const c = Uint8Array.from(defaults); c.set(page.slice(12, 12 + len));
-  return check(c) === null ? c : null;
+  return check(c) === null ? fixProject(c) : null;          // (as the firmware's rec_load and mmk3_config.parse_record)
 }
 
 // ---- the client ----

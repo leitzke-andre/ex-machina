@@ -4,9 +4,9 @@
  * which goes into NI's bootloader through our own enter_dfu(). Endpoint 1 carries USB-MIDI both ways: what arrives goes to the same handler
  * the stock OUT callback fed (mmk3_rx), what the translator queues in the transmit ring goes out 64 bytes at a time from the main loop.
  *
- * It only runs on a boot of ours that asked for it (SysEx 1C flag 8, one-shot, like the board init), and that boot reboots into the stock
- * path if no host has configured the device 5 s after the start-up, or if no configuration request (SysEx) has been answered after 15 s:
- * a broken stack can not leave the device unreachable. */
+ * In the patched image it only runs on a boot of ours that asked for it (SysEx 1C flag 8, one-shot, like the board init), and that boot reboots
+ * into the stock path if no host has configured the device 5 s after the start-up, or if no configuration request (SysEx) has been answered
+ * after 15 s: a broken stack can not leave the device unreachable. The standalone image always runs it, without those restarts. */
 
 #define USB_EPR(n) (*(volatile u32 *)(0x40005C00u + 4u * (n)))
 #define USB_CNTR (*(volatile u32 *)0x40005C40u)
@@ -55,19 +55,29 @@
 
 static void rx_handle(void);
 
-/* Bytes into the transmit ring, as many as fit (whole calls of the translator always fit: it checks the room first). */
+/* Bytes into the transmit ring: everything is USB-MIDI packets of 4 bytes, so only whole packets go in. When the host stops reading (not
+ * configured yet, suspended, no app listening) the ring fills up and what does not fit is dropped whole: a packet cut in two would shift every
+ * later one by its stub, and the host would read nothing but garbage from then on (the ring holds 0x4FF bytes, not a multiple of 4). */
+static u32 ring_room(void) { return (RING_RI + 0x500u - RING_WI - 1u) % 0x500u; }
 static u32 __attribute__((noinline, used)) ring_put(const void *src, u32 n)
 {
     const u8 *b = (const u8 *)src;
-    u32 k;
-    for (k = 0; k < n; k++) {
-        if ((u32)((RING_WI + 1u) % 0x500u) == RING_RI) break;
-        RING[RING_WI] = b[k];
-        RING_WI = (u16)((RING_WI + 1u) % 0x500u);
-    }
+    u32 k, w = RING_WI, room = ring_room() & ~3u;
+    if (n > room) n = room;
+    n &= ~3u;
+    for (k = 0; k < n; k++) { RING[w] = b[k]; w = (w + 1u) % 0x500u; }
+    RING_WI = (u16)w;                                /* one store, after the bytes: the interrupt only ever sees the index on a packet boundary */
     return k;
 }
-static u32 enqueue(const void *src, u32 n) { return OURS(ST->own_usb) ? ring_put(src, n) : ((u32 (*)(const void *, u32))STOCK(0x08008A39))(src, n); }
+static u32 enqueue(const void *src, u32 n)
+{
+    u32 room;
+    if (OURS(ST->own_usb)) return ring_put(src, n);
+    room = ring_room() & ~3u;                        /* the stock enqueue copies bytes as long as they fit: hand it whole packets only */
+    if (n > room) n = room;
+    n &= ~3u;
+    return n ? ((u32 (*)(const void *, u32))STOCK(0x08008A39))(src, n) : 0;
+}
 static u32 ring_get(u8 *dst, u32 max)
 {
     u32 k;
@@ -148,7 +158,7 @@ static void ep0_setup_packet(struct state *s)
         } else if (req == 5 && bm == 0x00) {         /* SET_ADDRESS: after the status stage */
             s->u_addr = (u8)(val & 0x7F); s->u_addr_set = 1; ep0_ack(s); return;
         } else if (req == 9 && bm == 0x00 && val <= 1) {          /* SET_CONFIGURATION */
-            s->u_config = (u8)val;
+            s->u_config = (u8)val; s->u_flush_to = RING_WI; s->u_flush = 1;
             if (val) { ep_setup(1, 0, ST_VALID, ST_NAK); s->u_ever = 1; }
             else ep_setup(1, 0, ST_DIS, ST_DIS);
             ep0_ack(s); return;
@@ -165,12 +175,16 @@ static void ep0_setup_packet(struct state *s)
                 ep0_ack(s); return;
             }
             if ((bm & 0x1F) == 0) { ep0_ack(s); return; }                                              /* device: remote wake-up, ignored */
+            if ((bm & 0x1F) == 2 && val == 0 && (idx & 0x7F) == 0) { ep0_ack(s); return; }            /* endpoint 0 halt: nothing to do */
         } else if (req == 10 && bm == 0x81) { s->u_buf[0] = 0; ep0_reply(s, s->u_buf, 1, len); return; }      /* GET_INTERFACE */
-        else if (req == 11 && bm == 0x01 && val == 0) { ep0_ack(s); return; }                                 /* SET_INTERFACE, alternate 0 */
+        else if (req == 11 && bm == 0x01 && val == 0) {                                                       /* SET_INTERFACE, alternate 0 */
+            if ((idx & 0xFF) == 1 && s->u_config) { ep_setup(1, 0x0000, ST_VALID, ST_NAK); s->u_flush_to = RING_WI; s->u_flush = 1; }  /* the MIDI endpoints start over at DATA0 */
+            ep0_ack(s); return;
+        }
     } else if ((bm & 0x7F) == 0x21 && (idx & 0xFF) == 2) {        /* DFU runtime, interface 2 */
         if (req == 0 && !(bm & 0x80)) { s->u_detach = 1; ep0_ack(s); return; }                       /* DFU_DETACH */
-        if (req == 3 && (bm & 0x80)) { u32 k; for (k = 0; k < 6; k++) s->u_buf[k] = 0; ep0_reply(s, s->u_buf, 6, len); return; }   /* GETSTATUS: OK, appIDLE */
-        if (req == 5 && (bm & 0x80)) { s->u_buf[0] = 0; ep0_reply(s, s->u_buf, 1, len); return; }      /* GETSTATE: appIDLE */
+        if (req == 3 && (bm & 0x80)) { u32 k; for (k = 0; k < 6; k++) s->u_buf[k] = 0; s->u_buf[4] = s->u_detach ? 1 : 0; ep0_reply(s, s->u_buf, 6, len); return; }   /* GETSTATUS: OK, appIDLE (appDETACH after a DETACH) */
+        if (req == 5 && (bm & 0x80)) { s->u_buf[0] = s->u_detach ? 1 : 0; ep0_reply(s, s->u_buf, 1, len); return; }      /* GETSTATE */
     }
     ep0_stall(s);
 }
@@ -183,7 +197,8 @@ static void usb_reset(struct state *s)
     ep_setup(0, 0x0200, ST_VALID, ST_NAK);           /* control */
     ep_setup(1, 0x0000, ST_DIS, ST_DIS);             /* bulk: enabled by SET_CONFIGURATION */
     USB_DADDR = 0x80;
-    s->u_config = 0; s->u_addr_set = 0; s->u_ctl = CTL_IDLE; s->u_detach = 0;
+    s->u_config = 0; s->u_addr_set = 0; s->u_ctl = CTL_IDLE; s->u_flush_to = RING_WI; s->u_flush = 1;
+    if (s->u_detach) { s->u_detach = 2; s->u_detach_t = MS16; }       /* a reset after DETACH: into DFU mode, as DFU 1.1 asks */
 }
 
 static void __attribute__((noinline)) own_usb_isr(void)
@@ -239,11 +254,21 @@ static void __attribute__((noinline)) own_usb_tx(void)
         __asm volatile("dsb"); AIRCR = 0x05FA0004u; for (;;) { }   /* no host took it, or none could talk to us: back to the stock path */
     }
 #endif
-    if (!s->u_config || (USB_EPR(1) & EP_STAT_TX) == (ST_VALID << 4) || RING_WI == RING_RI) return;
+    if (s->u_flush) {                                /* bus reset / new configuration: what was queued before it is stale (what came after stays) */
+        u32 to;
+        s->u_flush = 0; to = s->u_flush_to;
+        if ((to + 0x500u - RING_RI) % 0x500u <= (RING_WI + 0x500u - RING_RI) % 0x500u) RING_RI = (u16)to;
+    }
+    if (!s->u_config || (USB_EPR(1) & EP_STAT_TX) != (ST_NAK << 4) || RING_WI == RING_RI) return;   /* (VALID: busy; STALL: halted by the host) */
     n = ring_get(buf, 64);
     pma_write(PMA_EP1_TX, buf, n);
     BT_COUNT_TX(1) = n;
-    ep_stat(1, 0xFF, ST_VALID);
+    {
+        u32 pm;
+        __asm__ volatile("mrs %0, primask\n\tcpsid i" : "=r"(pm) :: "memory");
+        if (s->u_config && (USB_EPR(1) & EP_STAT_TX) == (ST_NAK << 4)) ep_stat(1, 0xFF, ST_VALID);   /* (the interrupt may have deconfigured it meanwhile) */
+        __asm__ volatile("msr primask, %0" :: "r"(pm) : "memory");
+    }
 }
 
 static void __attribute__((noinline)) own_usb_init(void)

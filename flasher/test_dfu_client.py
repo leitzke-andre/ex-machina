@@ -28,7 +28,9 @@ class MockDfu:
         assert request == D.DFU_GETSTATUS and length == 6
         self.polls += 1
         st = self.state
-        if st == D.S_MANIFEST_SYNC and self.reset_on_manifest: raise IOError('[Errno 5] Input/Output Error')   # the chip reset itself
+        if st == D.S_MANIFEST_SYNC and self.reset_on_manifest: raise IOError(5, 'Input/Output Error')   # the chip reset itself
+        if st == D.S_MANIFEST_SYNC and getattr(self, 'stall_on_manifest', False): raise IOError(32, 'Pipe error')      # a STALL: still there, refusing
+        if st in (D.S_DNLOAD_SYNC, D.S_DNBUSY) and getattr(self, 'busy_forever', False): self.state = D.S_DNBUSY; return bytes([0, 100, 0, 0, D.S_DNBUSY, 0])
         if st == D.S_DNLOAD_SYNC and self.drop_at is not None and len(self.blocks) - 1 == self.drop_at: raise IOError('[Errno 5] Input/Output Error')
         if st == D.S_DNLOAD_SYNC:
             self.state = D.S_DNBUSY if self.busy_ms else D.S_DNLOAD_IDLE
@@ -40,7 +42,11 @@ class MockDfu:
         poll = self.busy_ms if st == D.S_DNLOAD_SYNC else 0
         return bytes([self.status, poll & 255, (poll >> 8) & 255, 0, self.state, 0])
 
-def image(n): return struct.pack('<II', 0x20001c18, 0x080031c1) + bytes((i * 7) & 255 for i in range(n - 8))
+DEVDESC = bytes([0x12, 0x01, 0x00, 0x02, 0, 0, 0, 0x40, 0xcc, 0x17, 0x00, 0x17, 0x51, 0x00, 1, 2, 3, 1])     # 17cc:1700, bcdDevice 0x0051
+def image(n, desc=True):
+    b = bytearray(struct.pack('<II', 0x20001c18, 0x080031c1) + bytes((i * 7) & 255 for i in range(n - 8)))
+    if desc and n >= 0x200: b[0x100:0x112] = DEVDESC
+    return bytes(b)
 
 img = image(1000)
 m = MockDfu(); naps = []
@@ -82,6 +88,16 @@ check('validate_image rejects a reset vector outside the image', any('reset vect
 small = D.MIKRO_MK3._replace(app_limit=D.MIKRO_MK3.app_base + 0x400)
 check('validate_image takes another profile: 0x500 bytes fit the Mikro MK3 but not a 0x400-byte area', D.validate_image(image(0x500)) == [] and any('larger' in p for p in D.validate_image(image(0x500), small)))
 check('validate_image rejects images larger than the application area', any('larger' in p for p in D.validate_image(image(0x1D000))))
+check('the application area ends at 0x0801D800 (the Ex-Machina data pages below NI\'s settings): 0x1A800 bytes fit, one more does not',
+      D.validate_image(image(0x1A800)) == [] and any('larger' in p for p in D.validate_image(image(0x1A801))))
+check('validate_image: an image without a device descriptor for 17cc:1700 is not a firmware for this device', any('descriptor' in p for p in D.validate_image(image(0x1000, desc=False))))
+check('device_descriptors: the bcdDevice of each 17cc:1700 descriptor', D.device_descriptors(image(0x1000)) == [0x51])
+m = MockDfu(); m.stall_on_manifest = True
+try: D.download(m, img, sleep=lambda s: None); check('a STALL after the last block is a DfuError, not the "reset" ending', False)
+except D.DfuError: check('a STALL after the last block is a DfuError, not the "reset" ending', True)
+m = MockDfu(); m.busy_forever = True; slept = []
+try: D.download(m, img, sleep=slept.append); check('a device that stays busy gives up after 10 s of polling', False)
+except D.DfuError: check('a device that stays busy gives up after 10 s of polling', sum(slept) <= 11, sum(slept))
 # DFU functional descriptor of the stock device (the same 9 bytes are in the patched configuration): attributes 0x09 = can
 # download + will detach, detach timeout 255 ms, transfer size 64, DFU version 1.10. The first run on the real device exposed a
 # parser that read the version (0x0110 = 272) as the transfer size.
